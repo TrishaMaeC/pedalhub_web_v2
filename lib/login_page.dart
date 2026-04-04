@@ -84,7 +84,7 @@ class _LoginPageState extends State<LoginPage> {
         case 'VICE':
           Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (_) => const ForRankingPage()),
+            MaterialPageRoute(builder: (_) => const ViceChancellorDashboardPage()),
           );
           break;
         case 'HRMO':

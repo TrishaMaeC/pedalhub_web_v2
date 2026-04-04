@@ -63,6 +63,10 @@ class BorrowingApplicationV2Model {
   final DateTime? reassessmentReviewedAt;
   final String? reassessmentRemarks;
 
+  // ✅ NEW AUTOMATED SYSTEM FIELDS
+  final String? decisionSource; // 'SYSTEM' or 'MANUAL' or null
+  final double? weightedScore;  // Computed ranking score (nullable - null means no ranking was needed)
+
   BorrowingApplicationV2Model({
     required this.id,
     required this.userId,
@@ -121,6 +125,9 @@ class BorrowingApplicationV2Model {
     this.reassessmentReviewedBy,
     this.reassessmentReviewedAt,
     this.reassessmentRemarks,
+    // New fields
+    this.decisionSource,
+    this.weightedScore,
   });
 
   // ─────────────────────────────────────────────
@@ -128,6 +135,12 @@ class BorrowingApplicationV2Model {
   // ─────────────────────────────────────────────
   bool get isStudent => userType?.toLowerCase() == 'student';
   bool get isPersonnel => userType?.toLowerCase() == 'personnel';
+
+  // ─────────────────────────────────────────────
+  // HELPER: Check if processed by automated system
+  // ─────────────────────────────────────────────
+  bool get isSystemProcessed => decisionSource == 'SYSTEM';
+  bool get wasRanked => weightedScore != null;
 
   // ─────────────────────────────────────────────
   // HELPER: Get full address
@@ -237,6 +250,11 @@ class BorrowingApplicationV2Model {
           ? DateTime.tryParse(json['reassessment_reviewed_at'] as String)
           : null,
       reassessmentRemarks: json['reassessment_remarks'] as String?,
+      // New automated system fields
+      decisionSource: json['decision_source'] as String?,
+      weightedScore: json['weighted_score'] != null
+          ? (json['weighted_score'] as num).toDouble()
+          : null,
     );
   }
 
@@ -299,6 +317,9 @@ class BorrowingApplicationV2Model {
       'reassessment_reviewed_by': reassessmentReviewedBy,
       'reassessment_reviewed_at': reassessmentReviewedAt?.toIso8601String(),
       'reassessment_remarks': reassessmentRemarks,
+      // New automated system fields
+      'decision_source': decisionSource,
+      'weighted_score': weightedScore,
     };
   }
 
@@ -309,24 +330,32 @@ class BorrowingApplicationV2Model {
     switch (status) {
       case 'pending_application':
         return 'Application Pending';
-      case 'pending_sdo':
-        return 'Pending SDO Review';
-      case 'pending_hrmo':
-        return 'Pending HRMO/OSD Review';
-      case 'pending_vice':
-        return 'Pending Vice Chancellor Review';
-      case 'pending_gso':
-        return 'Pending GSO Review';
-      case 'approved':
-        return 'Approved';
-      case 'rejected':
-        return 'Rejected';
-      case 'bike_assigned':
-        return 'Bike Assigned';
+      case 'hrmo_approved':
+        return 'HRMO Approved';
+      case 'osd_approved':
+        return 'OSD Approved';
+      case 'medical_scheduled':
+        return 'Medical Appointment Scheduled';
+      case 'fit_to_use':
+        return 'Fit to Use - Awaiting Automated System';
+      case 'vice_pending':
+        return 'Automated Ranking in Progress';
+      case 'for_release':
+        return 'Auto-Approved - For Release';
+      case 'vice_rejected':
+        return 'Not Selected by Ranking System';
+      case 'health_rejected':
+        return 'Health Rejected';
+      case 'for_reassessment':
+        return 'For Reassessment';
       case 'active':
         return 'Active Borrower';
       case 'completed':
         return 'Borrowing Completed';
+      case 'overdue':
+        return 'Overdue';
+      case 'terminated':
+        return 'Terminated';
       case 'cancelled':
         return 'Application Cancelled';
       case 'renewal_pending':
@@ -334,29 +363,36 @@ class BorrowingApplicationV2Model {
       case 'renewal_approved':
         return 'Renewal Approved';
       default:
-        return status;
+        return status.replaceAll('_', ' ').toUpperCase();
     }
   }
 
   Color getStatusColor() {
     switch (status) {
-      case 'approved':
-      case 'bike_assigned':
+      case 'for_release':
       case 'active':
       case 'renewal_approved':
         return Colors.green;
+      case 'fit_to_use':
+      case 'vice_pending':
+      case 'medical_scheduled':
+      case 'hrmo_approved':
+      case 'osd_approved':
       case 'pending_application':
-      case 'pending_sdo':
-      case 'pending_hrmo':
-      case 'pending_vice':
-      case 'pending_gso':
       case 'renewal_pending':
         return Colors.orange;
-      case 'rejected':
+      case 'vice_rejected':
+      case 'health_rejected':
       case 'cancelled':
         return Colors.red;
+      case 'overdue':
+        return const Color(0xFFE64A19);
+      case 'terminated':
+        return const Color(0xFF424242);
       case 'completed':
         return Colors.blue;
+      case 'for_reassessment':
+        return Colors.purple;
       default:
         return Colors.grey;
     }
@@ -381,6 +417,31 @@ class BorrowingApplicationV2Model {
           'FCFS: ${fcfsPersonnelScore ?? '-'}/5';
     }
     return 'Unknown applicant type';
+  }
+
+  // ─────────────────────────────────────────────
+  // AUTOMATED SYSTEM SCORE BREAKDOWN
+  // ─────────────────────────────────────────────
+  String get automatedScoreBreakdown {
+    if (!isSystemProcessed) {
+      return 'Not processed by automated system';
+    }
+
+    if (!wasRanked) {
+      return 'Auto-approved (No ranking needed - applicants ≤ bikes)';
+    }
+
+    if (isStudent) {
+      final financial = financialNeedScore ?? 0;
+      final distance = distanceScore ?? 0;
+      return 'Financial Need: $financial/3 · Distance: $distance/3 · Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
+    } else if (isPersonnel) {
+      final workCategory = workCategoryRating ?? 0;
+      final distance = distanceScore ?? 0;
+      return 'Work Category: $workCategory/3 · Distance: $distance/3 · Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
+    }
+
+    return 'Score: ${weightedScore?.toStringAsFixed(2) ?? 'N/A'}';
   }
 
   // ─────────────────────────────────────────────
@@ -458,6 +519,14 @@ class BorrowingApplicationV2Model {
     String? rejectionReason,
     DateTime? createdAt,
     DateTime? updatedAt,
+    bool? reassessmentRequested,
+    DateTime? reassessmentRequestDate,
+    bool? reassessmentApproved,
+    String? reassessmentReviewedBy,
+    DateTime? reassessmentReviewedAt,
+    String? reassessmentRemarks,
+    String? decisionSource,
+    double? weightedScore,
   }) {
     return BorrowingApplicationV2Model(
       id: id ?? this.id,
@@ -511,6 +580,14 @@ class BorrowingApplicationV2Model {
       rejectionReason: rejectionReason ?? this.rejectionReason,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      reassessmentRequested: reassessmentRequested ?? this.reassessmentRequested,
+      reassessmentRequestDate: reassessmentRequestDate ?? this.reassessmentRequestDate,
+      reassessmentApproved: reassessmentApproved ?? this.reassessmentApproved,
+      reassessmentReviewedBy: reassessmentReviewedBy ?? this.reassessmentReviewedBy,
+      reassessmentReviewedAt: reassessmentReviewedAt ?? this.reassessmentReviewedAt,
+      reassessmentRemarks: reassessmentRemarks ?? this.reassessmentRemarks,
+      decisionSource: decisionSource ?? this.decisionSource,
+      weightedScore: weightedScore ?? this.weightedScore,
     );
   }
 

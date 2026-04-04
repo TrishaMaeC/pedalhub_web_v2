@@ -6,14 +6,14 @@ import 'package:pedalhub_admin/models/borrowing_application.dart';
 import 'package:pedalhub_admin/login_page.dart';
 import 'package:intl/intl.dart';
 
-class ForRankingPage extends StatefulWidget {
-  const ForRankingPage({super.key});
+class ViceChancellorDashboardPage extends StatefulWidget {
+  const ViceChancellorDashboardPage({super.key});
 
   @override
-  State<ForRankingPage> createState() => _ForRankingPageState();
+  State<ViceChancellorDashboardPage> createState() => _ViceChancellorDashboardPageState();
 }
 
-class _ForRankingPageState extends State<ForRankingPage> {
+class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPage> {
   final supabase = Supabase.instance.client;
   final _statsKey = GlobalKey<BikeStatsWidgetState>();
 
@@ -63,17 +63,14 @@ class _ForRankingPageState extends State<ForRankingPage> {
       List response;
 
       if (selectedStatus == 'all') {
+        // Show ALL applications that passed through or are in the VC automated system
+        // This includes: fit_to_use, vice_pending, for_release, vice_rejected, 
+        // and historical records (active, completed, etc.) that have decision_source = 'SYSTEM'
         response = await supabase
             .from('borrowing_applications_version2')
             .select('*')
             .ilike('campus', userCampus!)
-            .inFilter('status', [
-              'active',
-              'completed',
-              'waitlisted',
-              'for_release',
-              'for_appointment',
-            ])
+            .or('status.in.(fit_to_use,vice_pending,for_release,vice_rejected,active,completed,overdue,terminated),decision_source.eq.SYSTEM')
             .order('created_at', ascending: false);
       } else {
         response = await supabase
@@ -234,7 +231,7 @@ class _ForRankingPageState extends State<ForRankingPage> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Icon(
-                Icons.dashboard_rounded,
+                Icons.admin_panel_settings_rounded,
                 color: Colors.white,
                 size: 28,
               ),
@@ -244,7 +241,7 @@ class _ForRankingPageState extends State<ForRankingPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Vice Chancellor — Oversight Dashboard',
+                  'Vice Chancellor — Automated System Oversight',
                   style: TextStyle(
                     fontSize: 28,
                     fontWeight: FontWeight.bold,
@@ -253,8 +250,8 @@ class _ForRankingPageState extends State<ForRankingPage> {
                 ),
                 Text(
                   userCampus != null
-                      ? 'Campus: ${userCampus!.toUpperCase()}  •  Monitoring bicycle allocation & borrower records'
-                      : 'Monitoring bicycle allocation & borrower records',
+                      ? 'Campus: ${userCampus!.toUpperCase()}  •  Monitoring fair allocation & compliance'
+                      : 'Monitoring automated bicycle allocation system',
                   style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                 ),
               ],
@@ -276,11 +273,13 @@ class _ForRankingPageState extends State<ForRankingPage> {
   // ─────────────────────────────────────────────
   Widget _buildFilterTabs() {
     final tabs = [
-      _tabData('all', 'All Records', Icons.list_rounded, const Color(0xFF455A64)),
-      _tabData('active', 'Active', Icons.directions_bike_rounded, const Color(0xFF1565C0)),
-      _tabData('for_appointment', 'For Appointment', Icons.event_rounded, const Color(0xFFF57C00)),
-      _tabData('waitlisted', 'Waitlisted', Icons.hourglass_top_rounded, const Color(0xFF6A1B9A)),
-      _tabData('completed', 'Returned', Icons.check_circle_rounded, const Color(0xFF388E3C)),
+      _tabData('all', 'All VC Records', Icons.list_rounded, const Color(0xFF455A64)),
+      _tabData('fit_to_use', 'Awaiting System', Icons.pending_actions_rounded, const Color(0xFFF57C00)),
+      _tabData('vice_pending', 'System Processing', Icons.autorenew_rounded, const Color(0xFF1976D2)),
+      _tabData('for_release', 'Auto-Approved', Icons.check_circle_rounded, const Color(0xFF388E3C)),
+      _tabData('vice_rejected', 'Not Selected', Icons.cancel_rounded, const Color(0xFFD32F2F)),
+      _tabData('active', 'Active Borrowers', Icons.directions_bike_rounded, const Color(0xFF1565C0)),
+      _tabData('completed', 'Completed', Icons.task_alt_rounded, const Color(0xFF6A1B9A)),
     ];
 
     return Wrap(
@@ -410,13 +409,19 @@ class _ForRankingPageState extends State<ForRankingPage> {
               ),
               DataColumn(
                 label: Text(
+                  'Score / Decision',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              DataColumn(
+                label: Text(
                   'Bike No',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
               DataColumn(
                 label: Text(
-                  'Borrowing Period',
+                  'Application Date',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
@@ -435,11 +440,12 @@ class _ForRankingPageState extends State<ForRankingPage> {
   }
 
   DataRow _buildRow(BorrowingApplicationV2Model app) {
-    final dateFormat = DateFormat('MMM dd, yyyy');
+    final dateFormat = DateFormat('MMM dd, yyyy h:mm a');
     final statusColor = _statusColor(app.status);
     final statusLabel = _statusLabel(app.status);
 
     return DataRow(cells: [
+      // Name / ID
       DataCell(
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -459,6 +465,8 @@ class _ForRankingPageState extends State<ForRankingPage> {
           ],
         ),
       ),
+      
+      // Type
       DataCell(
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -480,35 +488,29 @@ class _ForRankingPageState extends State<ForRankingPage> {
           ),
         ),
       ),
+      
+      // Score / Decision (show weighted_score and decision_source)
+      DataCell(
+        _buildScoreCell(app),
+      ),
+      
+      // Bike Number
       DataCell(
         Text(
           app.assignedBikeNumber ?? '—',
           style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
         ),
       ),
+      
+      // Application Date
       DataCell(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'From: ${dateFormat.format(app.createdAt)}',
-              style: const TextStyle(fontSize: 11),
-            ),
-            Text(
-              app.status == 'completed'
-                  ? 'To: ${dateFormat.format(app.updatedAt)}'
-                  : 'To: Ongoing',
-              style: TextStyle(
-                fontSize: 11,
-                color: app.status == 'completed'
-                    ? Colors.grey[500]
-                    : Colors.green,
-              ),
-            ),
-          ],
+        Text(
+          dateFormat.format(app.createdAt),
+          style: const TextStyle(fontSize: 12),
         ),
       ),
+      
+      // Status
       DataCell(
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -530,18 +532,101 @@ class _ForRankingPageState extends State<ForRankingPage> {
     ]);
   }
 
+  Widget _buildScoreCell(BorrowingApplicationV2Model app) {
+    // Check if this was processed by the automated system
+    final hasScore = app.weightedScore != null;
+    final isSystemDecision = app.decisionSource == 'SYSTEM';
+
+    if (!isSystemDecision) {
+      return Text(
+        '—',
+        style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+      );
+    }
+
+    if (!hasScore) {
+      // Auto-approved without ranking (applicants <= bikes)
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF388E3C).withOpacity(0.1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'Auto-Approved',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF388E3C),
+              ),
+            ),
+            Text(
+              'No ranking needed',
+              style: TextStyle(
+                fontSize: 9,
+                color: Colors.grey[600],
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Has score - show it
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1976D2).withOpacity(0.1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            'Score: ${app.weightedScore!.toStringAsFixed(2)}',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1976D2),
+            ),
+          ),
+          Text(
+            'Ranked by System',
+            style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey[600],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Color _statusColor(String status) {
     switch (status) {
+      case 'fit_to_use':
+        return const Color(0xFFF57C00);
+      case 'vice_pending':
+        return const Color(0xFF1976D2);
+      case 'for_release':
+        return const Color(0xFF388E3C);
+      case 'vice_rejected':
+        return const Color(0xFFD32F2F);
       case 'active':
         return const Color(0xFF1565C0);
       case 'completed':
-        return const Color(0xFF388E3C);
-      case 'waitlisted':
         return const Color(0xFF6A1B9A);
-      case 'for_appointment':
-        return const Color(0xFFF57C00);
-      case 'for_release':
-        return const Color(0xFF0288D1);
+      case 'overdue':
+        return const Color(0xFFE64A19);
+      case 'terminated':
+        return const Color(0xFF424242);
       default:
         return Colors.grey;
     }
@@ -549,18 +634,24 @@ class _ForRankingPageState extends State<ForRankingPage> {
 
   String _statusLabel(String status) {
     switch (status) {
+      case 'fit_to_use':
+        return 'Awaiting Automated System';
+      case 'vice_pending':
+        return 'System Processing';
+      case 'for_release':
+        return 'Auto-Approved for Release';
+      case 'vice_rejected':
+        return 'Not Selected (Low Score)';
       case 'active':
         return 'Active';
       case 'completed':
-        return 'Returned';
-      case 'waitlisted':
-        return 'Waitlisted';
-      case 'for_appointment':
-        return 'For Appointment';
-      case 'for_release':
-        return 'For Release';
+        return 'Completed';
+      case 'overdue':
+        return 'Overdue';
+      case 'terminated':
+        return 'Terminated';
       default:
-        return status;
+        return status.replaceAll('_', ' ').toUpperCase();
     }
   }
 }
