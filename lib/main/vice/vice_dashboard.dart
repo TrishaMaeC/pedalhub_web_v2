@@ -10,10 +10,12 @@ class ViceChancellorDashboardPage extends StatefulWidget {
   const ViceChancellorDashboardPage({super.key});
 
   @override
-  State<ViceChancellorDashboardPage> createState() => _ViceChancellorDashboardPageState();
+  State<ViceChancellorDashboardPage> createState() =>
+      _ViceChancellorDashboardPageState();
 }
 
-class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPage> {
+class _ViceChancellorDashboardPageState
+    extends State<ViceChancellorDashboardPage> {
   final supabase = Supabase.instance.client;
   final _statsKey = GlobalKey<BikeStatsWidgetState>();
 
@@ -40,7 +42,8 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
           .eq('id', userId)
           .single();
 
-      setState(() => userCampus = (profile['campus'] as String).toLowerCase());
+      setState(
+          () => userCampus = (profile['campus'] as String).toLowerCase());
       await _fetchApplications();
     } catch (e) {
       debugPrint('CAMPUS LOAD ERROR: $e');
@@ -63,9 +66,6 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
       List response;
 
       if (selectedStatus == 'all') {
-        // Show ALL applications that passed through or are in the VC automated system
-        // This includes: fit_to_use, vice_pending, for_release, vice_rejected, 
-        // and historical records (active, completed, etc.) that have decision_source = 'SYSTEM'
         response = await supabase
             .from('borrowing_applications_version2')
             .select('*')
@@ -110,7 +110,8 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
             Icon(Icons.logout_rounded, color: Color(0xFFD32F2F)),
@@ -129,8 +130,7 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
               backgroundColor: const Color(0xFFD32F2F),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+                  borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Logout'),
@@ -198,8 +198,7 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
                         ? const Center(
                             child: CircularProgressIndicator(
                               valueColor: AlwaysStoppedAnimation<Color>(
-                                Color(0xFFD32F2F),
-                              ),
+                                  Color(0xFFD32F2F)),
                             ),
                           )
                         : _buildTable(),
@@ -273,13 +272,20 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
   // ─────────────────────────────────────────────
   Widget _buildFilterTabs() {
     final tabs = [
-      _tabData('all', 'All VC Records', Icons.list_rounded, const Color(0xFF455A64)),
-      _tabData('fit_to_use', 'Awaiting System', Icons.pending_actions_rounded, const Color(0xFFF57C00)),
-      _tabData('vice_pending', 'System Processing', Icons.autorenew_rounded, const Color(0xFF1976D2)),
-      _tabData('for_release', 'Auto-Approved', Icons.check_circle_rounded, const Color(0xFF388E3C)),
-      _tabData('vice_rejected', 'Not Selected', Icons.cancel_rounded, const Color(0xFFD32F2F)),
-      _tabData('active', 'Active Borrowers', Icons.directions_bike_rounded, const Color(0xFF1565C0)),
-      _tabData('completed', 'Completed', Icons.task_alt_rounded, const Color(0xFF6A1B9A)),
+      _tabData('all', 'All VC Records', Icons.list_rounded,
+          const Color(0xFF455A64)),
+      _tabData('fit_to_use', 'Awaiting System',
+          Icons.pending_actions_rounded, const Color(0xFFF57C00)),
+      _tabData('vice_pending', 'System Processing',
+          Icons.autorenew_rounded, const Color(0xFF1976D2)),
+      _tabData('for_release', 'Auto-Approved',
+          Icons.check_circle_rounded, const Color(0xFF388E3C)),
+      _tabData('vice_rejected', 'Not Selected', Icons.cancel_rounded,
+          const Color(0xFFD32F2F)),
+      _tabData('active', 'Active Borrowers',
+          Icons.directions_bike_rounded, const Color(0xFF1565C0)),
+      _tabData('completed', 'Completed', Icons.task_alt_rounded,
+          const Color(0xFF6A1B9A)),
     ];
 
     return Wrap(
@@ -297,13 +303,11 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
   }
 
   List<dynamic> _tabData(
-    String value,
-    String label,
-    IconData icon,
-    Color color,
-  ) => [value, label, icon, color];
+          String value, String label, IconData icon, Color color) =>
+      [value, label, icon, color];
 
-  Widget _filterTab(String value, String label, IconData icon, Color color) {
+  Widget _filterTab(
+      String value, String label, IconData icon, Color color) {
     final isSelected = selectedStatus == value;
     return GestureDetector(
       onTap: () {
@@ -312,7 +316,8 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected ? color : Colors.white,
           borderRadius: BorderRadius.circular(10),
@@ -333,7 +338,9 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 18, color: isSelected ? Colors.white : color),
+            Icon(icon,
+                size: 18,
+                color: isSelected ? Colors.white : color),
             const SizedBox(width: 8),
             Text(
               label,
@@ -350,7 +357,7 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
   }
 
   // ─────────────────────────────────────────────
-  // TABLE
+  // TABLE  — full-width, desktop-optimised
   // ─────────────────────────────────────────────
   Widget _buildTable() {
     if (applications.isEmpty) {
@@ -359,7 +366,8 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
           padding: const EdgeInsets.symmetric(vertical: 80),
           child: Column(
             children: [
-              Icon(Icons.inbox_outlined, size: 72, color: Colors.grey[300]),
+              Icon(Icons.inbox_outlined,
+                  size: 72, color: Colors.grey[300]),
               const SizedBox(height: 16),
               Text(
                 'No records found',
@@ -375,7 +383,12 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
       );
     }
 
+    // Column flex ratios  (must sum to a convenient number)
+    // Name/ID: 3 | Type: 1.5 | Score: 2 | Bike: 1.5 | Date: 2 | Status: 2.5
+    const colWidths = [3.0, 1.5, 2.0, 1.5, 2.0, 2.5];
+
     return Container(
+      width: double.infinity,
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -389,222 +402,33 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            headingRowColor: WidgetStateProperty.all(const Color(0xFFF5F7FA)),
-            columnSpacing: 24,
-            columns: const [
-              DataColumn(
-                label: Text(
-                  'Name / ID No',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Type',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Score / Decision',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Bike No',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Application Date',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Status',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-            rows: applications.map((app) => _buildRow(app)).toList(),
-          ),
-        ),
-      ),
-    );
-  }
-
-  DataRow _buildRow(BorrowingApplicationV2Model app) {
-    final dateFormat = DateFormat('MMM dd, yyyy h:mm a');
-    final statusColor = _statusColor(app.status);
-    final statusLabel = _statusLabel(app.status);
-
-    return DataRow(cells: [
-      // Name / ID
-      DataCell(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              '${app.firstName} ${app.lastName}',
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
-            Text(
-              app.idNo ?? 'N/A',
-              style: TextStyle(fontSize: 11, color: Colors.grey[500]),
-            ),
-          ],
-        ),
-      ),
-      
-      // Type
-      DataCell(
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: app.isStudent
-                ? const Color(0xFF1565C0).withOpacity(0.1)
-                : const Color(0xFF7B1FA2).withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text(
-            app.isStudent ? 'Student' : 'Personnel',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: app.isStudent
-                  ? const Color(0xFF1565C0)
-                  : const Color(0xFF7B1FA2),
-            ),
-          ),
-        ),
-      ),
-      
-      // Score / Decision (show weighted_score and decision_source)
-      DataCell(
-        _buildScoreCell(app),
-      ),
-      
-      // Bike Number
-      DataCell(
-        Text(
-          app.assignedBikeNumber ?? '—',
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-        ),
-      ),
-      
-      // Application Date
-      DataCell(
-        Text(
-          dateFormat.format(app.createdAt),
-          style: const TextStyle(fontSize: 12),
-        ),
-      ),
-      
-      // Status
-      DataCell(
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: statusColor),
-          ),
-          child: Text(
-            statusLabel,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: statusColor,
-            ),
-          ),
-        ),
-      ),
-    ]);
-  }
-
-  Widget _buildScoreCell(BorrowingApplicationV2Model app) {
-    // Check if this was processed by the automated system
-    final hasScore = app.weightedScore != null;
-    final isSystemDecision = app.decisionSource == 'SYSTEM';
-
-    if (!isSystemDecision) {
-      return Text(
-        '—',
-        style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-      );
-    }
-
-    if (!hasScore) {
-      // Auto-approved without ranking (applicants <= bikes)
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: const Color(0xFF388E3C).withOpacity(0.1),
-          borderRadius: BorderRadius.circular(6),
-        ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              'Auto-Approved',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: const Color(0xFF388E3C),
+            // ── Header row ──────────────────────────────────────────
+            _TableHeader(colWidths: colWidths),
+
+            // ── Data rows ───────────────────────────────────────────
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: applications.length,
+              separatorBuilder: (_, __) => Divider(
+                height: 1,
+                color: Colors.grey.shade100,
               ),
-            ),
-            Text(
-              'No ranking needed',
-              style: TextStyle(
-                fontSize: 9,
-                color: Colors.grey[600],
-                fontStyle: FontStyle.italic,
-              ),
+              itemBuilder: (context, index) {
+                final app = applications[index];
+                return _TableDataRow(
+                  app: app,
+                  colWidths: colWidths,
+                  isEven: index.isEven,
+                  statusColor: _statusColor(app.status),
+                  statusLabel: _statusLabel(app.status),
+                );
+              },
             ),
           ],
         ),
-      );
-    }
-
-    // Has score - show it
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1976D2).withOpacity(0.1),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            'Score: ${app.weightedScore!.toStringAsFixed(2)}',
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1976D2),
-            ),
-          ),
-          Text(
-            'Ranked by System',
-            style: TextStyle(
-              fontSize: 9,
-              color: Colors.grey[600],
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -653,5 +477,261 @@ class _ViceChancellorDashboardPageState extends State<ViceChancellorDashboardPag
       default:
         return status.replaceAll('_', ' ').toUpperCase();
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table Header
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TableHeader extends StatelessWidget {
+  final List<double> colWidths;
+
+  const _TableHeader({required this.colWidths});
+
+  @override
+  Widget build(BuildContext context) {
+    const labels = [
+      'Name / ID No',
+      'Type',
+      'Score / Decision',
+      'Bike No',
+      'Application Date',
+      'Status',
+    ];
+
+    return Container(
+      color: const Color(0xFFF5F7FA),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      child: Row(
+        children: List.generate(labels.length, (i) {
+          return Expanded(
+            flex: (colWidths[i] * 10).toInt(),
+            child: Text(
+              labels[i],
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Colors.grey[600],
+                letterSpacing: 0.4,
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table Data Row
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TableDataRow extends StatefulWidget {
+  final BorrowingApplicationV2Model app;
+  final List<double> colWidths;
+  final bool isEven;
+  final Color statusColor;
+  final String statusLabel;
+
+  const _TableDataRow({
+    required this.app,
+    required this.colWidths,
+    required this.isEven,
+    required this.statusColor,
+    required this.statusLabel,
+  });
+
+  @override
+  State<_TableDataRow> createState() => _TableDataRowState();
+}
+
+class _TableDataRowState extends State<_TableDataRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = widget.app;
+    final dateFormat = DateFormat('MMM dd, yyyy  h:mm a');
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        color: _hovered
+            ? const Color(0xFFF0F4FF)
+            : widget.isEven
+                ? Colors.white
+                : const Color(0xFFFAFAFA),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+        child: Row(
+          children: [
+            // ── Name / ID ──────────────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[0] * 10).toInt(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${app.firstName} ${app.lastName}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    app.idNo ?? 'N/A',
+                    style: TextStyle(
+                        fontSize: 11, color: Colors.grey[500]),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Type ───────────────────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[1] * 10).toInt(),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: app.isStudent
+                        ? const Color(0xFF1565C0).withOpacity(0.1)
+                        : const Color(0xFF7B1FA2).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    app.isStudent ? 'Student' : 'Personnel',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: app.isStudent
+                          ? const Color(0xFF1565C0)
+                          : const Color(0xFF7B1FA2),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // ── Score / Decision ───────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[2] * 10).toInt(),
+              child: _buildScoreCell(app),
+            ),
+
+            // ── Bike No ────────────────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[3] * 10).toInt(),
+              child: Text(
+                app.assignedBikeNumber ?? '—',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w600, fontSize: 13),
+              ),
+            ),
+
+            // ── Application Date ───────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[4] * 10).toInt(),
+              child: Text(
+                dateFormat.format(app.createdAt),
+                style: TextStyle(
+                    fontSize: 12, color: Colors.grey[700]),
+              ),
+            ),
+
+            // ── Status ─────────────────────────────────────────────
+            Expanded(
+              flex: (widget.colWidths[5] * 10).toInt(),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color:
+                        widget.statusColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                        color: widget.statusColor
+                            .withOpacity(0.4)),
+                  ),
+                  child: Text(
+                    widget.statusLabel,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: widget.statusColor,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScoreCell(BorrowingApplicationV2Model app) {
+    final isSystemDecision = app.decisionSource == 'SYSTEM';
+
+    if (!isSystemDecision) {
+      return Text('—',
+          style: TextStyle(fontSize: 12, color: Colors.grey[400]));
+    }
+
+    if (app.weightedScore == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            'Auto-Approved',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: const Color(0xFF388E3C),
+            ),
+          ),
+          Text(
+            'No ranking needed',
+            style: TextStyle(
+              fontSize: 10,
+              color: Colors.grey[500],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          app.weightedScore!.toStringAsFixed(2),
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1976D2),
+          ),
+        ),
+        Text(
+          'Ranked by System',
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.grey[500],
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+      ],
+    );
   }
 }
