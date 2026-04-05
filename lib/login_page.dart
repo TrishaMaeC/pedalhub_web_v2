@@ -10,6 +10,7 @@ import 'main/hrmo/hrmo_dashboard.dart';
 import 'package:pedalhub_admin/main/super_admin/super_admin_dashboard.dart';
 import 'package:pedalhub_admin/main/guidance/guidance_dashboard.dart';
 import 'package:pedalhub_admin/main/fake_student_portal/student_portal.dart';
+import 'package:pedalhub_admin/main/property_supply/property_supply_management.dart';
 import 'dart:async';
 
 class LoginPage extends StatefulWidget {
@@ -85,6 +86,12 @@ class _LoginPageState extends State<LoginPage> {
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(builder: (_) => const ViceChancellorDashboardPage()),
+          );
+          break;
+        case 'PSO':
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const PropertySupplyDashboardPage()),
           );
           break;
         case 'HRMO':

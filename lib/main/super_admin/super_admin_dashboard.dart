@@ -41,7 +41,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   Duration _remainingTime = Duration.zero;
 
   final List<String> _roles = [
-    'GSO', 'SDO', 'HEALTH', 'VICE', 'CHANCELLOR', 'HRMO', 'DISCIPLINE'
+    'GSO', 'SDO', 'HEALTH', 'VICE', 'PSO', 'HRMO', 'DISCIPLINE'
   ];
 
   final List<String> _campuses = [

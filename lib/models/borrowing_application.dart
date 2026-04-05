@@ -54,8 +54,8 @@ class BorrowingApplicationV2Model {
   final String? rejectionReason;
   final DateTime createdAt;
   final DateTime updatedAt;
-  
-  // REASSESSMENT FIELDS
+
+  // ── NEW-APPLICATION REASSESSMENT FIELDS (kept for non-renewal flow) ──────
   final bool? reassessmentRequested;
   final DateTime? reassessmentRequestDate;
   final bool? reassessmentApproved;
@@ -63,9 +63,51 @@ class BorrowingApplicationV2Model {
   final DateTime? reassessmentReviewedAt;
   final String? reassessmentRemarks;
 
-  // ✅ NEW AUTOMATED SYSTEM FIELDS
-  final String? decisionSource; // 'SYSTEM' or 'MANUAL' or null
-  final double? weightedScore;  // Computed ranking score (nullable - null means no ranking was needed)
+  // ── AUTOMATED SYSTEM FIELDS ───────────────────────────────────────────────
+  final String? decisionSource;
+  final double? weightedScore;
+
+  // ── RENEWAL GENERAL ───────────────────────────────────────────────────────
+  final DateTime? renewalAppliedAt;        // renewal_applied_at
+  final int renewalCount;                  // renewal_count
+  final int suspensionCount;               // suspension_count
+
+  // ── RENEWAL HRMO/OSD APPROVAL ─────────────────────────────────────────────
+  final String? renewalHrmoOsdRejectionReason;  // renewal_hrmo_osd_rejection_reason
+  final String? renewalHrmoOsdSignatoryName;    // renewal_hrmo_osd_signatory_name
+  final String? renewalHrmoOsdSignatureUrl;     // renewal_hrmo_osd_signature_url
+  final String? renewalHrmoOsdPdfUrl;           // renewal_hrmo_osd_pdf_url
+
+  // ── RENEWAL HEALTH — MEDICAL EVALUATION ──────────────────────────────────
+  final String? renewalMedicalRemarks;          // renewal_medical_remarks
+  final String? renewalMedicalSignatoryName;    // renewal_medical_signatory_name
+  final String? renewalMedicalSignatureUrl;     // renewal_medical_signature_url
+
+  // ── RENEWAL HEALTH — REASSESSMENT ────────────────────────────────────────
+  final DateTime? renewalReassessmentRequestedAt;  // renewal_reassessment_requested_at
+  final String? renewalReassessmentReason;         // renewal_reassessment_reason
+  final bool? renewalReassessmentApproved;         // renewal_reassessment_approved
+  final DateTime? renewalReassessmentReviewedAt;   // renewal_reassessment_reviewed_at
+  final String? renewalReassessmentRemarks;        // renewal_reassessment_remarks
+
+  // ── RENEWAL GSO — BIKE HANDLING ───────────────────────────────────────────
+  final int? renewalGsoBikeId;           // renewal_gso_bike_id
+  final String? renewalGsoBikeNumber;    // renewal_gso_bike_number
+  final String? renewalGsoCheckedBy;     // renewal_gso_checked_by
+  final String? renewalGsoSignatureUrl;  // renewal_gso_signature_url
+
+  // ── RENEWAL GSO — BIKE DAMAGE ─────────────────────────────────────────────
+  final String? renewalGsoDamageRemarks;    // renewal_gso_damage_remarks
+  final String? renewalGsoDamagePhotoUrl;   // renewal_gso_damage_photo_url
+  final int? renewalGsoDamageReportId;      // renewal_gso_damage_report_id
+
+  // ── RENEWAL DISCIPLINE/HRMO — PENALTIES ──────────────────────────────────
+  final String? renewalForwardedBy;          // renewal_forwarded_by
+  final String? renewalForwardedRemarks;     // renewal_forwarded_remarks
+  final DateTime? renewalSuspendedUntil;     // renewal_suspended_until
+  final DateTime? renewalTerminatedAt;       // renewal_terminated_at
+  final String? renewalTerminatedBy;         // renewal_terminated_by
+  final String? renewalTerminatedRemarks;    // renewal_terminated_remarks
 
   BorrowingApplicationV2Model({
     required this.id,
@@ -119,51 +161,71 @@ class BorrowingApplicationV2Model {
     this.rejectionReason,
     required this.createdAt,
     required this.updatedAt,
+    // New-application reassessment
     this.reassessmentRequested,
     this.reassessmentRequestDate,
     this.reassessmentApproved,
     this.reassessmentReviewedBy,
     this.reassessmentReviewedAt,
     this.reassessmentRemarks,
-    // New fields
+    // Automated system
     this.decisionSource,
     this.weightedScore,
+    // Renewal general
+    this.renewalAppliedAt,
+    this.renewalCount = 0,
+    this.suspensionCount = 0,
+    // Renewal HRMO/OSD
+    this.renewalHrmoOsdRejectionReason,
+    this.renewalHrmoOsdSignatoryName,
+    this.renewalHrmoOsdSignatureUrl,
+    this.renewalHrmoOsdPdfUrl,
+    // Renewal medical evaluation
+    this.renewalMedicalRemarks,
+    this.renewalMedicalSignatoryName,
+    this.renewalMedicalSignatureUrl,
+    // Renewal reassessment
+    this.renewalReassessmentRequestedAt,
+    this.renewalReassessmentReason,
+    this.renewalReassessmentApproved,
+    this.renewalReassessmentReviewedAt,
+    this.renewalReassessmentRemarks,
+    // Renewal GSO bike handling
+    this.renewalGsoBikeId,
+    this.renewalGsoBikeNumber,
+    this.renewalGsoCheckedBy,
+    this.renewalGsoSignatureUrl,
+    // Renewal GSO bike damage
+    this.renewalGsoDamageRemarks,
+    this.renewalGsoDamagePhotoUrl,
+    this.renewalGsoDamageReportId,
+    // Renewal penalties
+    this.renewalForwardedBy,
+    this.renewalForwardedRemarks,
+    this.renewalSuspendedUntil,
+    this.renewalTerminatedAt,
+    this.renewalTerminatedBy,
+    this.renewalTerminatedRemarks,
   });
 
   // ─────────────────────────────────────────────
-  // HELPER: Determine applicant type
+  // HELPERS
   // ─────────────────────────────────────────────
   bool get isStudent => userType?.toLowerCase() == 'student';
   bool get isPersonnel => userType?.toLowerCase() == 'personnel';
-
-  // ─────────────────────────────────────────────
-  // HELPER: Check if processed by automated system
-  // ─────────────────────────────────────────────
+  bool get isRenewal => status.startsWith('renewal_');
   bool get isSystemProcessed => decisionSource == 'SYSTEM';
   bool get wasRanked => weightedScore != null;
 
-  // ─────────────────────────────────────────────
-  // HELPER: Get full address
-  // ─────────────────────────────────────────────
   String get fullAddress {
-    final parts = [
-      houseNo,
-      streetName,
-      barangay,
-      municipality,
-      province,
-    ].where((s) => s != null && s.isNotEmpty).toList();
-
+    final parts = [houseNo, streetName, barangay, municipality, province]
+        .where((s) => s != null && s.isNotEmpty)
+        .toList();
     return parts.join(', ');
   }
 
-  String get presentAddress {
-    return fullAddress;
-  }
+  String get presentAddress => fullAddress;
 
-  // ─────────────────────────────────────────────
-  // HELPER: Get full name
-  // ─────────────────────────────────────────────
   String get fullName {
     if (middleName != null && middleName!.isNotEmpty) {
       return '$firstName ${middleName![0]}. $lastName';
@@ -171,6 +233,9 @@ class BorrowingApplicationV2Model {
     return '$firstName $lastName';
   }
 
+  // ─────────────────────────────────────────────
+  // fromJson
+  // ─────────────────────────────────────────────
   factory BorrowingApplicationV2Model.fromJson(Map<String, dynamic> json) {
     return BorrowingApplicationV2Model(
       id: json['id'] as int,
@@ -235,11 +300,15 @@ class BorrowingApplicationV2Model {
       workCategoryRating: json['work_category_rating'] as int?,
       fcfsPersonnelScore: json['fcfs_personnel_score'] as int?,
       osdHrmoPdfUrl: json['osd_hrmo_pdf_url'] as String?,
-      finalApplicantSignatureUrl: json['final_applicant_signature_url'] as String?,
+      finalApplicantSignatureUrl:
+          json['final_applicant_signature_url'] as String?,
       renewalPdfUrl: json['renewal_pdf_url'] as String?,
       rejectionReason: json['rejection_reason'] as String?,
-      createdAt: DateTime.tryParse(json['created_at'] as String) ?? DateTime.now(),
-      updatedAt: DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now(),
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String) ?? DateTime.now(),
+      updatedAt:
+          DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now(),
+      // New-application reassessment
       reassessmentRequested: json['reassessment_requested'] as bool?,
       reassessmentRequestDate: json['reassessment_request_date'] != null
           ? DateTime.tryParse(json['reassessment_request_date'] as String)
@@ -250,14 +319,76 @@ class BorrowingApplicationV2Model {
           ? DateTime.tryParse(json['reassessment_reviewed_at'] as String)
           : null,
       reassessmentRemarks: json['reassessment_remarks'] as String?,
-      // New automated system fields
+      // Automated system
       decisionSource: json['decision_source'] as String?,
       weightedScore: json['weighted_score'] != null
           ? (json['weighted_score'] as num).toDouble()
           : null,
+      // Renewal general
+      renewalAppliedAt: json['renewal_applied_at'] != null
+          ? DateTime.tryParse(json['renewal_applied_at'] as String)
+          : null,
+      renewalCount: (json['renewal_count'] as int?) ?? 0,
+      suspensionCount: (json['suspension_count'] as int?) ?? 0,
+      // Renewal HRMO/OSD
+      renewalHrmoOsdRejectionReason:
+          json['renewal_hrmo_osd_rejection_reason'] as String?,
+      renewalHrmoOsdSignatoryName:
+          json['renewal_hrmo_osd_signatory_name'] as String?,
+      renewalHrmoOsdSignatureUrl:
+          json['renewal_hrmo_osd_signature_url'] as String?,
+      renewalHrmoOsdPdfUrl: json['renewal_hrmo_osd_pdf_url'] as String?,
+      // Renewal medical evaluation
+      renewalMedicalRemarks: json['renewal_medical_remarks'] as String?,
+      renewalMedicalSignatoryName:
+          json['renewal_medical_signatory_name'] as String?,
+      renewalMedicalSignatureUrl:
+          json['renewal_medical_signature_url'] as String?,
+      // Renewal reassessment
+      renewalReassessmentRequestedAt:
+          json['renewal_reassessment_requested_at'] != null
+              ? DateTime.tryParse(
+                  json['renewal_reassessment_requested_at'] as String)
+              : null,
+      renewalReassessmentReason:
+          json['renewal_reassessment_reason'] as String?,
+      renewalReassessmentApproved:
+          json['renewal_reassessment_approved'] as bool?,
+      renewalReassessmentReviewedAt:
+          json['renewal_reassessment_reviewed_at'] != null
+              ? DateTime.tryParse(
+                  json['renewal_reassessment_reviewed_at'] as String)
+              : null,
+      renewalReassessmentRemarks:
+          json['renewal_reassessment_remarks'] as String?,
+      // Renewal GSO bike handling
+      renewalGsoBikeId: json['renewal_gso_bike_id'] as int?,
+      renewalGsoBikeNumber: json['renewal_gso_bike_number'] as String?,
+      renewalGsoCheckedBy: json['renewal_gso_checked_by'] as String?,
+      renewalGsoSignatureUrl: json['renewal_gso_signature_url'] as String?,
+      // Renewal GSO bike damage
+      renewalGsoDamageRemarks: json['renewal_gso_damage_remarks'] as String?,
+      renewalGsoDamagePhotoUrl:
+          json['renewal_gso_damage_photo_url'] as String?,
+      renewalGsoDamageReportId: json['renewal_gso_damage_report_id'] as int?,
+      // Renewal penalties
+      renewalForwardedBy: json['renewal_forwarded_by'] as String?,
+      renewalForwardedRemarks: json['renewal_forwarded_remarks'] as String?,
+      renewalSuspendedUntil: json['renewal_suspended_until'] != null
+          ? DateTime.tryParse(json['renewal_suspended_until'] as String)
+          : null,
+      renewalTerminatedAt: json['renewal_terminated_at'] != null
+          ? DateTime.tryParse(json['renewal_terminated_at'] as String)
+          : null,
+      renewalTerminatedBy: json['renewal_terminated_by'] as String?,
+      renewalTerminatedRemarks:
+          json['renewal_terminated_remarks'] as String?,
     );
   }
 
+  // ─────────────────────────────────────────────
+  // toJson
+  // ─────────────────────────────────────────────
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -311,23 +442,62 @@ class BorrowingApplicationV2Model {
       'rejection_reason': rejectionReason,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
+      // New-application reassessment
       'reassessment_requested': reassessmentRequested,
       'reassessment_request_date': reassessmentRequestDate?.toIso8601String(),
       'reassessment_approved': reassessmentApproved,
       'reassessment_reviewed_by': reassessmentReviewedBy,
       'reassessment_reviewed_at': reassessmentReviewedAt?.toIso8601String(),
       'reassessment_remarks': reassessmentRemarks,
-      // New automated system fields
+      // Automated system
       'decision_source': decisionSource,
       'weighted_score': weightedScore,
+      // Renewal general
+      'renewal_applied_at': renewalAppliedAt?.toIso8601String(),
+      'renewal_count': renewalCount,
+      'suspension_count': suspensionCount,
+      // Renewal HRMO/OSD
+      'renewal_hrmo_osd_rejection_reason': renewalHrmoOsdRejectionReason,
+      'renewal_hrmo_osd_signatory_name': renewalHrmoOsdSignatoryName,
+      'renewal_hrmo_osd_signature_url': renewalHrmoOsdSignatureUrl,
+      'renewal_hrmo_osd_pdf_url': renewalHrmoOsdPdfUrl,
+      // Renewal medical evaluation
+      'renewal_medical_remarks': renewalMedicalRemarks,
+      'renewal_medical_signatory_name': renewalMedicalSignatoryName,
+      'renewal_medical_signature_url': renewalMedicalSignatureUrl,
+      // Renewal reassessment
+      'renewal_reassessment_requested_at':
+          renewalReassessmentRequestedAt?.toIso8601String(),
+      'renewal_reassessment_reason': renewalReassessmentReason,
+      'renewal_reassessment_approved': renewalReassessmentApproved,
+      'renewal_reassessment_reviewed_at':
+          renewalReassessmentReviewedAt?.toIso8601String(),
+      'renewal_reassessment_remarks': renewalReassessmentRemarks,
+      // Renewal GSO bike handling
+      'renewal_gso_bike_id': renewalGsoBikeId,
+      'renewal_gso_bike_number': renewalGsoBikeNumber,
+      'renewal_gso_checked_by': renewalGsoCheckedBy,
+      'renewal_gso_signature_url': renewalGsoSignatureUrl,
+      // Renewal GSO bike damage
+      'renewal_gso_damage_remarks': renewalGsoDamageRemarks,
+      'renewal_gso_damage_photo_url': renewalGsoDamagePhotoUrl,
+      'renewal_gso_damage_report_id': renewalGsoDamageReportId,
+      // Renewal penalties
+      'renewal_forwarded_by': renewalForwardedBy,
+      'renewal_forwarded_remarks': renewalForwardedRemarks,
+      'renewal_suspended_until': renewalSuspendedUntil?.toIso8601String(),
+      'renewal_terminated_at': renewalTerminatedAt?.toIso8601String(),
+      'renewal_terminated_by': renewalTerminatedBy,
+      'renewal_terminated_remarks': renewalTerminatedRemarks,
     };
   }
 
   // ─────────────────────────────────────────────
-  // STATUS HELPERS
+  // STATUS TEXT
   // ─────────────────────────────────────────────
   String getStatusText() {
     switch (status) {
+      // ── Original statuses ──────────────────────────────────────────────
       case 'pending_application':
         return 'Application Pending';
       case 'hrmo_approved':
@@ -354,58 +524,124 @@ class BorrowingApplicationV2Model {
         return 'Borrowing Completed';
       case 'overdue':
         return 'Overdue';
-      case 'terminated':
-        return 'Terminated';
       case 'cancelled':
         return 'Application Cancelled';
-      case 'renewal_pending':
-        return 'Renewal Pending';
-      case 'renewal_approved':
-        return 'Renewal Approved';
+      // ── Renewal statuses ───────────────────────────────────────────────
+      case 'renewal_applied':
+        return 'Renewal Applied';
+      case 'renewal_osd_approved':
+        return 'Renewal OSD Approved';
+      case 'renewal_osd_rejected':
+        return 'Renewal OSD Rejected';
+      case 'renewal_hrmo_approved':
+        return 'Renewal HRMO Approved';
+      case 'renewal_hrmo_rejected':
+        return 'Renewal HRMO Rejected';
+      case 'renewal_medical_scheduled':
+        return 'Renewal Medical Scheduled';
+      case 'renewal_medical_approved':
+        return 'Renewal Medical Approved';
+      case 'renewal_medical_rejected':
+        return 'Renewal Medical Rejected';
+      case 'renewal_medical_reassessment':
+        return 'Renewal Reassessment Requested';
+      case 'renewal_medical_reassessment_approved':
+        return 'Renewal Reassessment Approved';
+      case 'renewal_pending_next_sem':
+        return 'Renewal Pending Next Semester';
+      case 'renewal_bike_checked':
+        return 'Renewal Bike Checked';
+      case 'renewal_bike_damage_reported':
+        return 'Renewal Bike Damage Reported';
+      case 'renewal_bike_damaged':
+        return 'Renewal Bike Damaged';
+      case 'forwarded_discipline':
+        return 'Forwarded to Discipline Office';
+      case 'forwarded_hrmo':
+        return 'Forwarded to HRMO';
+      case 'suspended_1_semester':
+        return 'Suspended (1 Semester)';
+      case 'terminated':
+        return 'Terminated';
+      case 'active_renewal':
+        return 'Active (Renewal)';
       default:
         return status.replaceAll('_', ' ').toUpperCase();
     }
   }
 
+  // ─────────────────────────────────────────────
+  // STATUS COLOR
+  // ─────────────────────────────────────────────
   Color getStatusColor() {
     switch (status) {
+      // Green — approved / active / passed
       case 'for_release':
       case 'active':
-      case 'renewal_approved':
+      case 'active_renewal':
+      case 'renewal_osd_approved':
+      case 'renewal_hrmo_approved':
+      case 'renewal_medical_approved':
+      case 'renewal_medical_reassessment_approved':
+      case 'renewal_bike_checked':
         return Colors.green;
+
+      // Orange — in-progress / scheduled / pending
       case 'fit_to_use':
       case 'vice_pending':
       case 'medical_scheduled':
       case 'hrmo_approved':
       case 'osd_approved':
       case 'pending_application':
-      case 'renewal_pending':
+      case 'renewal_applied':
+      case 'renewal_medical_scheduled':
+      case 'renewal_pending_next_sem':
         return Colors.orange;
+
+      // Purple — reassessment
+      case 'for_reassessment':
+      case 'renewal_medical_reassessment':
+        return Colors.purple;
+
+      // Red — rejected / failed / damage
       case 'vice_rejected':
       case 'health_rejected':
       case 'cancelled':
+      case 'renewal_osd_rejected':
+      case 'renewal_hrmo_rejected':
+      case 'renewal_medical_rejected':
+      case 'renewal_bike_damage_reported':
+      case 'renewal_bike_damaged':
         return Colors.red;
+
+      // Deep orange — overdue / forwarded
       case 'overdue':
+      case 'forwarded_discipline':
+      case 'forwarded_hrmo':
         return const Color(0xFFE64A19);
+
+      // Dark grey — suspended / terminated
+      case 'suspended_1_semester':
       case 'terminated':
         return const Color(0xFF424242);
+
+      // Blue — completed
       case 'completed':
         return Colors.blue;
-      case 'for_reassessment':
-        return Colors.purple;
+
       default:
         return Colors.grey;
     }
   }
 
   // ─────────────────────────────────────────────
-  // SCORE BREAKDOWN — handles both student & personnel
+  // SCORE BREAKDOWNS
   // ─────────────────────────────────────────────
   String get scoreBreakdown {
     if (isStudent) {
-      if (financialNeedScore == null && distanceScore == null && fcfsStudentScore == null) {
-        return 'Not yet scored';
-      }
+      if (financialNeedScore == null &&
+          distanceScore == null &&
+          fcfsStudentScore == null) return 'Not yet scored';
       return 'Financial: ${financialNeedScore ?? '-'}/5 · '
           'Distance: ${distanceScore ?? '-'}/5 · '
           'FCFS: ${fcfsStudentScore ?? '-'}/5';
@@ -419,28 +655,20 @@ class BorrowingApplicationV2Model {
     return 'Unknown applicant type';
   }
 
-  // ─────────────────────────────────────────────
-  // AUTOMATED SYSTEM SCORE BREAKDOWN
-  // ─────────────────────────────────────────────
   String get automatedScoreBreakdown {
-    if (!isSystemProcessed) {
-      return 'Not processed by automated system';
-    }
-
+    if (!isSystemProcessed) return 'Not processed by automated system';
     if (!wasRanked) {
       return 'Auto-approved (No ranking needed - applicants ≤ bikes)';
     }
-
     if (isStudent) {
-      final financial = financialNeedScore ?? 0;
-      final distance = distanceScore ?? 0;
-      return 'Financial Need: $financial/3 · Distance: $distance/3 · Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
+      return 'Financial Need: ${financialNeedScore ?? 0}/3 · '
+          'Distance: ${distanceScore ?? 0}/3 · '
+          'Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
     } else if (isPersonnel) {
-      final workCategory = workCategoryRating ?? 0;
-      final distance = distanceScore ?? 0;
-      return 'Work Category: $workCategory/3 · Distance: $distance/3 · Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
+      return 'Work Category: ${workCategoryRating ?? 0}/3 · '
+          'Distance: ${distanceScore ?? 0}/3 · '
+          'Total: ${weightedScore?.toStringAsFixed(2) ?? '0.00'}/6';
     }
-
     return 'Score: ${weightedScore?.toStringAsFixed(2) ?? 'N/A'}';
   }
 
@@ -449,8 +677,8 @@ class BorrowingApplicationV2Model {
   // ─────────────────────────────────────────────
   String get formattedIncome {
     if (familyIncome == null) return 'N/A';
-    final formatter = NumberFormat.simpleCurrency(name: 'PHP', decimalDigits: 0);
-    return formatter.format(familyIncome);
+    return NumberFormat.simpleCurrency(name: 'PHP', decimalDigits: 0)
+        .format(familyIncome);
   }
 
   String get formattedDistance {
@@ -460,12 +688,12 @@ class BorrowingApplicationV2Model {
 
   String get formattedPenalty {
     if (finalPenalty == null) return 'N/A';
-    final formatter = NumberFormat.simpleCurrency(name: 'PHP', decimalDigits: 2);
-    return formatter.format(finalPenalty);
+    return NumberFormat.simpleCurrency(name: 'PHP', decimalDigits: 2)
+        .format(finalPenalty);
   }
 
   // ─────────────────────────────────────────────
-  // COPY WITH METHOD
+  // copyWith
   // ─────────────────────────────────────────────
   BorrowingApplicationV2Model copyWith({
     int? id,
@@ -527,6 +755,34 @@ class BorrowingApplicationV2Model {
     String? reassessmentRemarks,
     String? decisionSource,
     double? weightedScore,
+    DateTime? renewalAppliedAt,
+    int? renewalCount,
+    int? suspensionCount,
+    String? renewalHrmoOsdRejectionReason,
+    String? renewalHrmoOsdSignatoryName,
+    String? renewalHrmoOsdSignatureUrl,
+    String? renewalHrmoOsdPdfUrl,
+    String? renewalMedicalRemarks,
+    String? renewalMedicalSignatoryName,
+    String? renewalMedicalSignatureUrl,
+    DateTime? renewalReassessmentRequestedAt,
+    String? renewalReassessmentReason,
+    bool? renewalReassessmentApproved,
+    DateTime? renewalReassessmentReviewedAt,
+    String? renewalReassessmentRemarks,
+    int? renewalGsoBikeId,
+    String? renewalGsoBikeNumber,
+    String? renewalGsoCheckedBy,
+    String? renewalGsoSignatureUrl,
+    String? renewalGsoDamageRemarks,
+    String? renewalGsoDamagePhotoUrl,
+    int? renewalGsoDamageReportId,
+    String? renewalForwardedBy,
+    String? renewalForwardedRemarks,
+    DateTime? renewalSuspendedUntil,
+    DateTime? renewalTerminatedAt,
+    String? renewalTerminatedBy,
+    String? renewalTerminatedRemarks,
   }) {
     return BorrowingApplicationV2Model(
       id: id ?? this.id,
@@ -575,24 +831,76 @@ class BorrowingApplicationV2Model {
       workCategoryRating: workCategoryRating ?? this.workCategoryRating,
       fcfsPersonnelScore: fcfsPersonnelScore ?? this.fcfsPersonnelScore,
       osdHrmoPdfUrl: osdHrmoPdfUrl ?? this.osdHrmoPdfUrl,
-      finalApplicantSignatureUrl: finalApplicantSignatureUrl ?? this.finalApplicantSignatureUrl,
+      finalApplicantSignatureUrl:
+          finalApplicantSignatureUrl ?? this.finalApplicantSignatureUrl,
       renewalPdfUrl: renewalPdfUrl ?? this.renewalPdfUrl,
       rejectionReason: rejectionReason ?? this.rejectionReason,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-      reassessmentRequested: reassessmentRequested ?? this.reassessmentRequested,
-      reassessmentRequestDate: reassessmentRequestDate ?? this.reassessmentRequestDate,
+      reassessmentRequested:
+          reassessmentRequested ?? this.reassessmentRequested,
+      reassessmentRequestDate:
+          reassessmentRequestDate ?? this.reassessmentRequestDate,
       reassessmentApproved: reassessmentApproved ?? this.reassessmentApproved,
-      reassessmentReviewedBy: reassessmentReviewedBy ?? this.reassessmentReviewedBy,
-      reassessmentReviewedAt: reassessmentReviewedAt ?? this.reassessmentReviewedAt,
+      reassessmentReviewedBy:
+          reassessmentReviewedBy ?? this.reassessmentReviewedBy,
+      reassessmentReviewedAt:
+          reassessmentReviewedAt ?? this.reassessmentReviewedAt,
       reassessmentRemarks: reassessmentRemarks ?? this.reassessmentRemarks,
       decisionSource: decisionSource ?? this.decisionSource,
       weightedScore: weightedScore ?? this.weightedScore,
+      renewalAppliedAt: renewalAppliedAt ?? this.renewalAppliedAt,
+      renewalCount: renewalCount ?? this.renewalCount,
+      suspensionCount: suspensionCount ?? this.suspensionCount,
+      renewalHrmoOsdRejectionReason:
+          renewalHrmoOsdRejectionReason ?? this.renewalHrmoOsdRejectionReason,
+      renewalHrmoOsdSignatoryName:
+          renewalHrmoOsdSignatoryName ?? this.renewalHrmoOsdSignatoryName,
+      renewalHrmoOsdSignatureUrl:
+          renewalHrmoOsdSignatureUrl ?? this.renewalHrmoOsdSignatureUrl,
+      renewalHrmoOsdPdfUrl: renewalHrmoOsdPdfUrl ?? this.renewalHrmoOsdPdfUrl,
+      renewalMedicalRemarks:
+          renewalMedicalRemarks ?? this.renewalMedicalRemarks,
+      renewalMedicalSignatoryName:
+          renewalMedicalSignatoryName ?? this.renewalMedicalSignatoryName,
+      renewalMedicalSignatureUrl:
+          renewalMedicalSignatureUrl ?? this.renewalMedicalSignatureUrl,
+      renewalReassessmentRequestedAt:
+          renewalReassessmentRequestedAt ?? this.renewalReassessmentRequestedAt,
+      renewalReassessmentReason:
+          renewalReassessmentReason ?? this.renewalReassessmentReason,
+      renewalReassessmentApproved:
+          renewalReassessmentApproved ?? this.renewalReassessmentApproved,
+      renewalReassessmentReviewedAt:
+          renewalReassessmentReviewedAt ?? this.renewalReassessmentReviewedAt,
+      renewalReassessmentRemarks:
+          renewalReassessmentRemarks ?? this.renewalReassessmentRemarks,
+      renewalGsoBikeId: renewalGsoBikeId ?? this.renewalGsoBikeId,
+      renewalGsoBikeNumber: renewalGsoBikeNumber ?? this.renewalGsoBikeNumber,
+      renewalGsoCheckedBy: renewalGsoCheckedBy ?? this.renewalGsoCheckedBy,
+      renewalGsoSignatureUrl:
+          renewalGsoSignatureUrl ?? this.renewalGsoSignatureUrl,
+      renewalGsoDamageRemarks:
+          renewalGsoDamageRemarks ?? this.renewalGsoDamageRemarks,
+      renewalGsoDamagePhotoUrl:
+          renewalGsoDamagePhotoUrl ?? this.renewalGsoDamagePhotoUrl,
+      renewalGsoDamageReportId:
+          renewalGsoDamageReportId ?? this.renewalGsoDamageReportId,
+      renewalForwardedBy: renewalForwardedBy ?? this.renewalForwardedBy,
+      renewalForwardedRemarks:
+          renewalForwardedRemarks ?? this.renewalForwardedRemarks,
+      renewalSuspendedUntil:
+          renewalSuspendedUntil ?? this.renewalSuspendedUntil,
+      renewalTerminatedAt: renewalTerminatedAt ?? this.renewalTerminatedAt,
+      renewalTerminatedBy: renewalTerminatedBy ?? this.renewalTerminatedBy,
+      renewalTerminatedRemarks:
+          renewalTerminatedRemarks ?? this.renewalTerminatedRemarks,
     );
   }
 
   @override
-  String toString() => 'BorrowingApplicationV2Model(id: $id, name: $fullName, status: $status)';
+  String toString() =>
+      'BorrowingApplicationV2Model(id: $id, name: $fullName, status: $status)';
 
   @override
   bool operator ==(Object other) =>

@@ -32,11 +32,46 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
   TimeOfDay clinicEndTime = const TimeOfDay(hour: 23, minute: 0);
 
   // Timer to auto-refresh the pending list every minute
-  // so the Conduct Exam button unlocks without manual refresh
   Timer? _autoRefreshTimer;
 
   // Logged-in user's campus (fetched from profiles table)
   String? userCampus;
+
+  // ─────────────────────────────────────────────
+  // STATUS HELPERS
+  // ─────────────────────────────────────────────
+
+  /// Returns true if the application is a renewal based on its status.
+  bool _isRenewalStatus(String status) {
+    return status.startsWith('renewal_');
+  }
+
+  /// Statuses that appear in the Pending tab (awaiting exam).
+  static const List<String> _pendingStatuses = [
+    'medical_scheduled',
+    'renewal_medical_scheduled',
+  ];
+
+  /// Statuses that appear in the Reassessment tab.
+  ///
+  /// renewal_medical_reassessment         → awaiting health staff review
+  /// renewal_medical_reassessment_approved → approved; borrower walks in for re-exam
+  static const List<String> _reassessmentStatuses = [
+    // new application reassessment (existing flow via reassessment_requested flag)
+    // renewal reassessment — awaiting review OR approved (walk-in re-exam)
+    'renewal_medical_reassessment',
+    'renewal_medical_reassessment_approved',
+  ];
+
+  /// Statuses that appear in the History tab.
+  static const List<String> _historyPassStatuses = [
+    'fit_to_use',
+    'renewal_medical_approved',
+  ];
+  static const List<String> _historyFailStatuses = [
+    'health_rejected',
+    'renewal_medical_rejected',
+  ];
 
   @override
   void initState() {
@@ -99,8 +134,7 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
   // ─────────────────────────────────────────────
   // GET APPOINTMENT DATE-TIME (LOCAL, NOT UTC)
   // ─────────────────────────────────────────────
-  Future<DateTime?> getAppointmentDateTime(int applicationId,
-      {bool isRenewal = false}) async {
+  Future<DateTime?> getAppointmentDateTime(int applicationId) async {
     final response = await supabase
         .from('medical_appointments_version2')
         .select('appointment_date, appointment_time')
@@ -109,11 +143,9 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
 
     if (response == null) return null;
 
-    // Parse date only (no timezone issue)
     final date = DateTime.parse(response['appointment_date'] as String);
     final timeParts = (response['appointment_time'] as String).split(':');
 
-    // Build a LOCAL DateTime — avoids UTC offset bugs (e.g. UTC+8)
     return DateTime(
       date.year,
       date.month,
@@ -125,24 +157,38 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
 
   // ─────────────────────────────────────────────
   // CHECK EXAM AVAILABILITY
+  // Window: (appointment - 30 min) → clinic closing time (today)
   //
-  // Window:  (appointment - 30 min)  →  clinic closing time (today)
+  // For renewal_medical_reassessment_approved the borrower walks in directly
+  // (no appointment), so we skip the appointment check and allow immediately.
   // ─────────────────────────────────────────────
-  Future<Map<String, dynamic>> checkExamAvailability(int applicationId,
-      {bool isRenewal = false}) async {
-    final appt =
-        await getAppointmentDateTime(applicationId, isRenewal: isRenewal);
+  Future<Map<String, dynamic>> checkExamAvailability(
+      int applicationId, String status) async {
+    // Walk-in re-exam after reassessment approval — always allowed during
+    // clinic hours; no appointment slot required.
+    if (status == 'renewal_medical_reassessment_approved') {
+      final now = DateTime.now();
+      final today = now;
+      final clinicEnd = DateTime(
+        today.year,
+        today.month,
+        today.day,
+        clinicEndTime.hour,
+        clinicEndTime.minute,
+      );
+      final bool allowed = now.isBefore(clinicEnd);
+      return {"allowed": allowed, "availableAt": null, "walkIn": true};
+    }
+
+    final appt = await getAppointmentDateTime(applicationId);
 
     if (appt == null) {
-      return {"allowed": false, "availableAt": null};
+      return {"allowed": false, "availableAt": null, "walkIn": false};
     }
 
     final now = DateTime.now();
-
-    // The button becomes available 30 minutes before the appointment
     final availableTime = appt.subtract(const Duration(minutes: 30));
 
-    // Clinic closing time is always based on TODAY's date (not the appt date)
     final today = DateTime.now();
     final clinicEnd = DateTime(
       today.year,
@@ -152,17 +198,16 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
       clinicEndTime.minute,
     );
 
-    // Allowed: after the 30-min early window opens AND before clinic closes
     final bool allowed =
         now.isAfter(availableTime) && now.isBefore(clinicEnd);
 
-    // Debug — remove once confirmed working
     debugPrint(
         '[ExamAvail] appId=$applicationId | now=$now | availableAt=$availableTime | clinicEnd=$clinicEnd | allowed=$allowed');
 
     return {
       "allowed": allowed,
       "availableAt": availableTime,
+      "walkIn": false,
     };
   }
 
@@ -211,8 +256,7 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
         _showClosingTimeModal(todayString);
       });
     } else {
-      final timeParts =
-          (response['closing_time'] as String).split(':');
+      final timeParts = (response['closing_time'] as String).split(':');
       setState(() {
         clinicEndTime = TimeOfDay(
           hour: int.parse(timeParts[0]),
@@ -328,8 +372,282 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // SHOW PAST EXAM RESULTS (for renewal pending cards)
+  // ─────────────────────────────────────────────
+  Future<void> _showPastExamResultsAndProceed(
+      BorrowingApplicationV2Model app) async {
+    List<dynamic> examHistory = [];
+    try {
+      examHistory = await supabase
+          .from('physical_examinations')
+          .select('*')
+          .eq('application_id', app.id)
+          .order('examination_date', ascending: false);
+    } catch (e) {
+      debugPrint('Error fetching past exams: $e');
+    }
+
+    if (!mounted) return;
+
+    // If no past exams found, go straight to examination dialog
+    if (examHistory.isEmpty) {
+      _showExaminationDialog(app);
+      return;
+    }
+
+    // Show past results first, then let staff proceed to new exam
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          width: 680,
+          constraints: const BoxConstraints(maxHeight: 620),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Past Examination Results',
+                        style: TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        '${app.firstName} ${app.lastName}',
+                        style:
+                            TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.purple.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.purple),
+                        ),
+                        child: const Text(
+                          'RENEWAL',
+                          style: TextStyle(
+                              color: Colors.purple,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const Divider(),
+              const SizedBox(height: 8),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: examHistory.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final exam = entry.value as Map<String, dynamic>;
+                      final isLatest = idx == 0;
+                      return _buildPastExamCard(exam, isLatest: isLatest);
+                    }).toList(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                    ),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _showExaminationDialog(app);
+                    },
+                    icon: const Icon(Icons.health_and_safety),
+                    label: const Text(
+                      'Proceed to Examination',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPastExamCard(Map<String, dynamic> exam,
+      {bool isLatest = false}) {
+    final examDate =
+        exam['examination_date']?.toString().split('T')[0] ?? 'N/A';
+    final bmi = exam['bmi'] != null
+        ? (exam['bmi'] as num).toStringAsFixed(1)
+        : 'N/A';
+    final bmiCategory = exam['bmi_category'] ?? 'N/A';
+    final bp = exam['blood_pressure'] ?? 'N/A';
+    final hr = exam['heart_rate'] != null ? '${exam['heart_rate']} bpm' : 'N/A';
+    final physician = exam['physician_name'] ?? 'N/A';
+    final remarks = exam['remarks'] ?? '';
+
+    // Determine pass/fail from exam fields
+    final List<String> failed = [];
+    final checkFields = {
+      'balance': 'Balance',
+      'musculoskeletal': 'Musculo-Skeletal',
+      'lungs': 'Lungs',
+      'heart': 'Heart',
+      'extremities': 'Extremities',
+      'hearing': 'Hearing',
+      'vision': 'Vision',
+    };
+    for (final entry in checkFields.entries) {
+      if (exam[entry.key] == false) failed.add(entry.value);
+    }
+    final passed = failed.isEmpty;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isLatest
+            ? (passed ? Colors.green[50] : Colors.red[50])
+            : Colors.grey[50],
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isLatest
+              ? (passed ? Colors.green : Colors.red)
+              : Colors.grey[300]!,
+          width: isLatest ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    passed ? Icons.check_circle : Icons.cancel,
+                    color: passed ? Colors.green : Colors.red,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    passed ? 'Fit to Use' : 'Not Fit to Use',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: passed ? Colors.green[700] : Colors.red[700],
+                    ),
+                  ),
+                  if (isLatest) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'LATEST',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              Text(
+                examDate,
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 16,
+            runSpacing: 4,
+            children: [
+              _miniDetail('BMI', '$bmi ($bmiCategory)'),
+              _miniDetail('BP', bp),
+              _miniDetail('HR', hr),
+              _miniDetail('Physician', physician),
+            ],
+          ),
+          if (failed.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Failed: ${failed.join(', ')}',
+              style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.red,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
+          if (remarks.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Remarks: $remarks',
+              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _miniDetail(String label, String value) {
+    return RichText(
+      text: TextSpan(
+        style: const TextStyle(fontSize: 12, color: Colors.black87),
+        children: [
+          TextSpan(
+            text: '$label: ',
+            style: const TextStyle(
+                fontWeight: FontWeight.w600, color: Colors.black54),
+          ),
+          TextSpan(text: value),
+        ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // SHOW EXAMINATION DIALOG
+  // ─────────────────────────────────────────────
   void _showExaminationDialog(BorrowingApplicationV2Model app,
       {bool isReassessment = false}) {
+    final isRenewal = _isRenewalStatus(app.status);
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -337,12 +655,20 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
         applicationId: app.id,
         studentName: '${app.firstName} ${app.lastName}',
         isReassessment: isReassessment,
-        isRenewal: app.status == 'renewal_applied',
+        isRenewal: isRenewal,
         onCompleted: fetchApplications,
       ),
     );
   }
 
+  // ─────────────────────────────────────────────
+  // REASSESSMENT REVIEW DIALOG
+  //
+  // Writes to renewal_reassessment_* columns (DB-aligned).
+  // On approval → status becomes renewal_medical_reassessment_approved
+  //   (borrower walks in directly for re-exam, no new appointment).
+  // On rejection → status stays renewal_medical_rejected (permanent).
+  // ─────────────────────────────────────────────
   void _showRemarksDialog(BorrowingApplicationV2Model app, bool approve) {
     final remarksController = TextEditingController();
 
@@ -377,15 +703,27 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
             ),
             onPressed: () async {
               Navigator.pop(context);
+
+              // ── DB-aligned column names ──────────────────────────────────
+              // Approved  → renewal_medical_reassessment_approved
+              //             (borrower walks in directly, no scheduling needed)
+              // Rejected  → renewal_medical_rejected (permanent; no more chances)
+              final newStatus = approve
+                  ? 'renewal_medical_reassessment_approved'
+                  : 'renewal_medical_rejected';
+
               await supabase
                   .from('borrowing_applications_version2')
                   .update({
-                    "reassessment_remarks": remarksController.text,
-                    "reassessment_reviewed_at":
+                    // Correct renewal-specific column names
+                    "renewal_reassessment_remarks": remarksController.text,
+                    "renewal_reassessment_reviewed_at":
                         DateTime.now().toIso8601String(),
-                    "reassessment_approved": approve,
+                    "renewal_reassessment_approved": approve,
+                    "status": newStatus,
                   })
                   .eq("id", app.id);
+
               fetchApplications();
             },
             child: Text(approve ? "Approve" : "Reject"),
@@ -395,6 +733,9 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // FETCH APPLICATIONS
+  // ─────────────────────────────────────────────
   Future<void> fetchApplications() async {
     if (userCampus == null) return;
 
@@ -414,6 +755,10 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
 
         List<dynamic> newApps = [];
         List<dynamic> renewalApps = [];
+        // Walk-in re-exams: renewal_medical_reassessment_approved
+        // These borrowers come in directly — no appointment slot — so we
+        // do NOT filter them by appointment date; they appear every day.
+        List<dynamic> walkInApps = [];
 
         if (pendingFilter == 'all' || pendingFilter == 'new') {
           newApps = await supabase
@@ -430,15 +775,26 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
               .from('borrowing_applications_version2')
               .select(
                   '*, medical_appointments_version2!left(appointment_date, appointment_time, status)')
-              .eq('status', 'renewal_applied')
+              .eq('status', 'renewal_medical_scheduled')
               .ilike('campus', userCampus!);
           for (var app in renewalApps) app['_isRenewal'] = true;
+
+          // Walk-in re-exams (approved reassessment) — no appointment required.
+          // Include them regardless of date filter.
+          walkInApps = await supabase
+              .from('borrowing_applications_version2')
+              .select('*')
+              .eq('status', 'renewal_medical_reassessment_approved')
+              .ilike('campus', userCampus!);
+          for (var app in walkInApps) {
+            app['_isRenewal'] = true;
+            // Inject a sentinel so the UI can flag these as walk-ins
+            app['_isWalkIn'] = true;
+          }
         }
 
-        response = [...newApps, ...renewalApps];
-
-        // Filter by appointment date
-        response = response.where((app) {
+        // Filter scheduled apps by appointment date; walk-ins bypass date filter
+        final scheduled = [...newApps, ...renewalApps].where((app) {
           try {
             final appointments = app['medical_appointments_version2'];
             List apptList = [];
@@ -457,8 +813,14 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
           }
         }).toList();
 
-        // Sort by appointment time
+        response = [...scheduled, ...walkInApps];
+
+        // Sort scheduled by appointment time; walk-ins go to the end
         response.sort((a, b) {
+          final aWalkIn = a['_isWalkIn'] == true;
+          final bWalkIn = b['_isWalkIn'] == true;
+          if (aWalkIn && !bWalkIn) return 1;
+          if (!aWalkIn && bWalkIn) return -1;
           try {
             final aAppts = a['medical_appointments_version2'] is List
                 ? a['medical_appointments_version2'] as List
@@ -491,19 +853,28 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
 
       // =============================
       // Reassessment Tab
+      //
+      // Shows:
+      //   • New-application reassessments  (reassessment_requested == true,
+      //     excludes any renewal status so they don't bleed over)
+      //   • renewal_medical_reassessment   (awaiting health-staff review)
+      //
+      // NOTE: renewal_medical_reassessment_approved is intentionally excluded
+      // here — those borrowers appear in the Pending tab as walk-ins.
       // =============================
       else if (selectedTab == 'reassessment') {
         final newReassessments = await supabase
             .from('borrowing_applications_version2')
             .select('*')
             .eq('reassessment_requested', true)
+            .not('status', 'in',
+                '(renewal_medical_reassessment,renewal_medical_reassessment_approved,renewal_medical_rejected,renewal_medical_approved)')
             .ilike('campus', userCampus!);
 
         final renewalReassessments = await supabase
             .from('borrowing_applications_version2')
             .select('*')
-            .eq('reassessment_requested', true)
-            .eq('status', 'renewal_applied')
+            .eq('status', 'renewal_medical_reassessment')
             .ilike('campus', userCampus!);
 
         for (var app in newReassessments) app['_isRenewal'] = false;
@@ -518,35 +889,29 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
       // History Tab
       // =============================
       else {
-        final newHistory = await supabase
+        List<String> targetStatuses;
+        if (examFilter == 'pass') {
+          targetStatuses = _historyPassStatuses;
+        } else if (examFilter == 'fail') {
+          targetStatuses = _historyFailStatuses;
+        } else {
+          targetStatuses = [
+            ..._historyPassStatuses,
+            ..._historyFailStatuses,
+          ];
+        }
+
+        response = await supabase
             .from('borrowing_applications_version2')
             .select('*')
-            .inFilter(
-                'status',
-                examFilter == 'pass'
-                    ? ['fit_to_use']
-                    : examFilter == 'fail'
-                        ? ['rejected_health']
-                        : ['fit_to_use', 'rejected_health'])
+            .inFilter('status', targetStatuses)
             .ilike('campus', userCampus!);
 
-        final renewalHistory = await supabase
-            .from('borrowing_applications_version2')
-            .select('*')
-            .eq('status', 'renewal_applied')
-            .inFilter(
-                'status',
-                examFilter == 'pass'
-                    ? ['fit_to_use']
-                    : examFilter == 'fail'
-                        ? ['rejected_health']
-                        : ['fit_to_use', 'rejected_health'])
-            .ilike('campus', userCampus!);
+        // Tag renewals by status prefix
+        for (var app in response) {
+          app['_isRenewal'] = _isRenewalStatus(app['status'] as String);
+        }
 
-        for (var app in newHistory) app['_isRenewal'] = false;
-        for (var app in renewalHistory) app['_isRenewal'] = true;
-
-        response = [...newHistory, ...renewalHistory];
         applications =
             response.map((e) => BorrowingApplicationV2Model.fromJson(e)).toList();
       }
@@ -607,8 +972,13 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     try {
       final now = DateTime.now();
       final age = now.year - app.dateOfBirth.year;
-      String diagnosis =
-          app.status == 'rejected_health' ? 'Unfit to cycle' : 'Fit to cycle';
+
+      // Determine diagnosis based on status (covers both new and renewal)
+      final bool isFailed = [
+        'health_rejected',
+        'renewal_medical_rejected',
+      ].contains(app.status);
+      String diagnosis = isFailed ? 'Unfit to cycle' : 'Fit to cycle';
 
       List<String> abnormalFindings = [];
       if (examData['balance'] == false) abnormalFindings.add('Balance');
@@ -907,9 +1277,13 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
   }
 
   Widget applicationCard(BorrowingApplicationV2Model app) {
-    final isPassed = !['rejected_health'].contains(app.status);
+    final isPassed = _historyPassStatuses.contains(app.status);
     final isReassessmentTab = selectedTab == 'reassessment';
-    final isRenewal = app.status == 'renewal_applied';
+    final isRenewal = _isRenewalStatus(app.status);
+
+    // A walk-in is a renewal that was approved for reassessment and is now
+    // queued in the Pending tab without an appointment slot.
+    final isWalkIn = app.status == 'renewal_medical_reassessment_approved';
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -962,10 +1336,11 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                     style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                   ),
                   if (isReassessmentTab &&
-                      app.reassessmentRequestDate != null) ...[
+                      app.renewalReassessmentRequestedAt != null) ...[
                     const SizedBox(height: 4),
                     Text(
-                      'Requested: ${DateFormat('yyyy-MM-dd HH:mm').format(app.reassessmentRequestDate!)}',
+                      // DB column: renewal_reassessment_requested_at
+                      'Requested: ${DateFormat('yyyy-MM-dd HH:mm').format(app.renewalReassessmentRequestedAt!)}',
                       style: const TextStyle(
                           fontSize: 12, color: Colors.purple),
                     ),
@@ -989,6 +1364,25 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                       ),
                     ),
                   ),
+                  // Walk-in badge
+                  if (isWalkIn) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.teal,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text(
+                        'WALK-IN RE-EXAM',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -999,22 +1393,22 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                 if (selectedTab == 'pending') ...[
                   // ─────────────────────────────────────────────
                   // FutureBuilder for Conduct Exam button
-                  //
-                  // Key uses DateTime.now().minute so it rebuilds
-                  // every minute automatically.
+                  // Walk-ins skip the appointment check.
                   // ─────────────────────────────────────────────
                   FutureBuilder<Map<String, dynamic>>(
-                    future: checkExamAvailability(app.id, isRenewal: isRenewal),
+                    future: checkExamAvailability(app.id, app.status),
                     key: ValueKey('exam_${app.id}_${DateTime.now().minute}'),
                     builder: (context, snapshot) {
                       bool allowed = false;
                       DateTime? availableAt;
+                      bool walkIn = false;
 
                       if (snapshot.connectionState == ConnectionState.done &&
                           snapshot.hasData) {
                         allowed = snapshot.data!["allowed"] as bool;
                         availableAt =
                             snapshot.data!["availableAt"] as DateTime?;
+                        walkIn = snapshot.data!["walkIn"] as bool? ?? false;
                       }
 
                       return Column(
@@ -1026,15 +1420,29 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                                   allowed ? Colors.green : Colors.grey,
                               foregroundColor: Colors.white,
                             ),
-                            // Only null (disabled) when NOT allowed
                             onPressed: allowed
-                                ? () => _showExaminationDialog(app)
+                                ? () {
+                                    if (isRenewal) {
+                                      if (isWalkIn) {
+                                        // Walk-in re-exam: go straight to exam dialog
+                                        // flagged as reassessment so the dialog
+                                        // sets the correct outcome status.
+                                        _showExaminationDialog(app,
+                                            isReassessment: true);
+                                      } else {
+                                        // Regular renewal: show past results first
+                                        _showPastExamResultsAndProceed(app);
+                                      }
+                                    } else {
+                                      _showExaminationDialog(app);
+                                    }
+                                  }
                                 : null,
                             icon: const Icon(Icons.health_and_safety,
                                 size: 18),
-                            label: const Text('Conduct Exam'),
+                            label: Text(
+                                walkIn ? 'Conduct Re-exam' : 'Conduct Exam'),
                           ),
-                          // Show when button unlocks if it's not yet allowed
                           if (!allowed && availableAt != null)
                             Padding(
                               padding: const EdgeInsets.only(top: 4),
@@ -1044,10 +1452,11 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                                     fontSize: 11, color: Colors.orange),
                               ),
                             ),
-                          // Show if no appointment is found at all
-                          if (!allowed && availableAt == null &&
+                          if (!allowed &&
+                              availableAt == null &&
                               snapshot.connectionState ==
-                                  ConnectionState.done)
+                                  ConnectionState.done &&
+                              !walkIn)
                             const Padding(
                               padding: EdgeInsets.only(top: 4),
                               child: Text(
@@ -1061,7 +1470,10 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                     },
                   ),
                 ] else if (isReassessmentTab) ...[
-                  if (app.reassessmentApproved == null) ...[
+                  // Reassessment tab — only shows renewal_medical_reassessment
+                  // (awaiting review). renewal_medical_reassessment_approved
+                  // borrowers are already in the Pending tab as walk-ins.
+                  if (app.renewalReassessmentApproved == null) ...[
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
@@ -1080,10 +1492,13 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                       icon: const Icon(Icons.close, size: 18),
                       label: const Text('Reject'),
                     ),
-                  ] else if (app.reassessmentApproved == true) ...[
+                  ] else if (app.renewalReassessmentApproved == true) ...[
+                    // Should rarely appear here given the fetch excludes
+                    // renewal_medical_reassessment_approved, but kept as
+                    // a safety fallback.
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
+                        backgroundColor: Colors.teal,
                         foregroundColor: Colors.white,
                       ),
                       onPressed: () =>

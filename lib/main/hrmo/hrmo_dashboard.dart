@@ -111,39 +111,25 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
   Future<void> _loadMetrics() async {
     // ── Renewal metrics
     final pending = await supabase
-      .from('borrowing_applications_version2')
-      .select('id')
-      .eq('status', 'renewal_applied')
-      .eq('user_type', 'personnel')
-      .ilike('campus', userCampus!);
+        .from('borrowing_applications_version2')
+        .select('id')
+        .eq('status', 'renewal_applied')
+        .eq('user_type', 'personnel')
+        .ilike('campus', userCampus!);
 
     final approvedHrmo = await supabase
-      .from('borrowing_applications_version2')
-      .select('id')
-      .eq('status', 'renewal_hrmo_approved')
-      .eq('user_type', 'personnel')
-      .ilike('campus', userCampus!);
-
-    // final approvedChancellor = await supabase
-        // .from('renewal_applications')
-        // .select('id')
-        // .eq('status', 'renewal_chancellor')
-        // .eq('is_personnel', true)
-        // .ilike('campus', userCampus!);
-
-    // final approvedGso = await supabase
-        // .from('renewal_applications')
-        // .select('id')
-        // .eq('status', 'renewal_gso')
-        // .eq('is_personnel', true)
-        // .ilike('campus', userCampus!);
+        .from('borrowing_applications_version2')
+        .select('id')
+        .eq('status', 'renewal_hrmo_approved')
+        .eq('user_type', 'personnel')
+        .ilike('campus', userCampus!);
 
     final rejected = await supabase
-      .from('borrowing_applications_version2')
-      .select('id')
-      .eq('status', 'renewal_hrmo_rejected')
-      .eq('user_type', 'personnel')
-      .ilike('campus', userCampus!);
+        .from('borrowing_applications_version2')
+        .select('id')
+        .eq('status', 'renewal_hrmo_rejected')
+        .eq('user_type', 'personnel')
+        .ilike('campus', userCampus!);
 
     // ── New Applications metrics (user_type = 'personnel')
     final newPending = await supabase
@@ -198,12 +184,12 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
   Future<void> _fetchApplications() async {
     if (userCampus == null) return;
     final response = await supabase
-        .from('borrowing_applications_version2')  // Changed from renewal_applications
+        .from('borrowing_applications_version2')
         .select('*')
         .eq('status', selectedStatus)
-        .eq('user_type', 'personnel')  // Changed from is_personnel
+        .eq('user_type', 'personnel')
         .ilike('campus', userCampus!)
-        .order('created_at', ascending: false);
+        .order('renewal_applied_at', ascending: false);
     setState(() => applications = List<Map<String, dynamic>>.from(response));
   }
 
@@ -293,15 +279,13 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
       applicantName: applicantName,
       onReject: (reason) async {
         try {
-          await supabase.from('renewal_applications').update({
+          await supabase.from('borrowing_applications_version2').update({
             'status': 'renewal_hrmo_rejected',
-            'rejection_reason': reason,
-            'hrmo_remarks': reason,
-            'hrmo_approval_date': DateTime.now().toIso8601String(),
+            'renewal_hrmo_osd_rejection_reason': reason,
           }).eq('id', app['id']);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Application rejected.'), backgroundColor: Colors.orange),
+              const SnackBar(content: Text('Renewal application rejected.'), backgroundColor: Colors.orange),
             );
           }
           await _loadAll();
@@ -1137,8 +1121,8 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
             Icon(Icons.inbox_outlined, size: 72, color: Colors.grey[300]),
             const SizedBox(height: 16),
             Text(
-              selectedStatus == 'renewal_applied' ? 'No pending applications'
-                  : selectedStatus == 'renewal_hrmo_approved' ? 'No approved applications' : 'No rejected applications',
+              selectedStatus == 'renewal_applied' ? 'No pending renewals'
+                  : selectedStatus == 'renewal_hrmo_approved' ? 'No approved renewals' : 'No rejected renewals',
               style: TextStyle(fontSize: 16, color: Colors.grey[500], fontWeight: FontWeight.w500),
             ),
           ]),
@@ -1151,16 +1135,25 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
   Widget _applicationCard(Map<String, dynamic> app) {
     final firstName      = app['first_name'] ?? '';
     final lastName       = app['last_name'] ?? '';
-    final idNumber       = app['id_number'] ?? 'N/A';
-    final programOrOffice = app['program_or_office'] ?? 'N/A';
-    final bikeNumber     = app['bike_number'] ?? 'N/A';
-    final isPersonnel    = app['is_personnel'] == true;
+    final idNo           = app['id_no'] ?? 'N/A';
+    final collegeOffice  = app['college_office'] ?? 'N/A';
+    final controlNumber  = app['control_number'] ?? 'N/A';
+    final renewalCount   = app['renewal_count'] ?? 0;
     final status         = app['status'] ?? '';
     final isPending      = status == 'renewal_applied';
     final isApproved     = status == 'renewal_hrmo_approved';
+    
     final Color statusColor = isPending ? const Color(0xFFF57C00) : isApproved ? const Color(0xFF388E3C) : const Color(0xFFD32F2F);
     final String statusLabel = isPending ? 'Pending Review' : isApproved ? 'Approved' : 'Rejected';
     final IconData statusIcon = isPending ? Icons.pending_actions_rounded : isApproved ? Icons.check_circle_rounded : Icons.cancel_rounded;
+
+    String renewalAppliedLabel = 'N/A';
+    if (app['renewal_applied_at'] != null) {
+      try {
+        final dt = DateTime.parse(app['renewal_applied_at'].toString()).toLocal();
+        renewalAppliedLabel = DateFormat('MMM dd, yyyy').format(dt);
+      } catch (_) {}
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -1186,20 +1179,32 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: isPersonnel ? const Color(0xFF7B1FA2).withOpacity(0.1) : const Color(0xFF1976D2).withOpacity(0.1),
+                  color: const Color(0xFF7B1FA2).withOpacity(0.1),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: isPersonnel ? const Color(0xFF7B1FA2) : const Color(0xFF1976D2)),
+                  border: Border.all(color: const Color(0xFF7B1FA2)),
                 ),
-                child: Text(isPersonnel ? 'Personnel' : 'Student',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                        color: isPersonnel ? const Color(0xFF7B1FA2) : const Color(0xFF1976D2))),
+                child: const Text('Personnel',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF7B1FA2))),
               ),
+              if (renewalCount > 0) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1565C0).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFF1565C0)),
+                  ),
+                  child: Text('Renewal #$renewalCount',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF1565C0))),
+                ),
+              ],
             ]),
             const SizedBox(height: 4),
-            Text('ID: $idNumber  •  ${isPersonnel ? 'Office' : 'Program'}: $programOrOffice',
+            Text('ID: $idNo  •  Office: $collegeOffice  •  Control: $controlNumber',
                 style: TextStyle(fontSize: 13, color: Colors.grey[600])),
             const SizedBox(height: 2),
-            Text('Bike No: $bikeNumber', style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+            Text('Applied: $renewalAppliedLabel', style: TextStyle(fontSize: 13, color: Colors.grey[500])),
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
@@ -1613,21 +1618,15 @@ class _CertifyDialogState extends State<_CertifyDialog> {
       final signatureUrl = await _uploadSignature(sigBytes!, fileName);
       if (signatureUrl == null) throw Exception('Signature upload failed');
 
-      final disciplinaryRemark = _hasDisciplinaryAction == true
-          ? 'Has disciplinary actions with final judgement relating to government properties'
-          : 'Has no disciplinary actions with final judgement relating to government properties';
-
       if (widget.tableSource == _AppTableSource.renewal) {
-        // ── renewal_applications fields
-        await supabase.from('renewal_applications').update({
-          'status': 'renewal_hrmo',
-          'hrmo_signature_url': signatureUrl,
-          'hrmo_signatory_name': _signatoryNameController.text.trim(),
-          'hrmo_approval_date': DateTime.now().toIso8601String(),
-          'hrmo_remarks': disciplinaryRemark,
+        // ── Renewal: borrowing_applications_version2 with renewal_ prefix
+        await supabase.from('borrowing_applications_version2').update({
+          'status': 'renewal_hrmo_approved',
+          'renewal_hrmo_osd_signature_url': signatureUrl,
+          'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
         }).eq('id', widget.applicationId);
       } else {
-        // ── borrowing_applications_version2 fields
+        // ── New Application: borrowing_applications_version2 without renewal_ prefix
         await supabase.from('borrowing_applications_version2').update({
           'status': 'hrmo_approved',
           'hrmo_osd_signature': signatureUrl,

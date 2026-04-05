@@ -1,9 +1,12 @@
+// for_return_page.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:pedalhub_admin/widgets/gso_drawer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pedalhub_admin/widgets/app_header.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:typed_data';
 
 class ForReturnPage extends StatefulWidget {
   const ForReturnPage({super.key});
@@ -18,7 +21,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
   String selectedTab = 'new';
 
   String selectedNewStatus = 'active';
-  String selectedRenewalStatus = 'renewal_gso';
+  String selectedRenewalStatus = 'renewal_medical_approved';
   String selectedShortTermStatus = 'active';
 
   List<Map<String, dynamic>> newActiveBorrows = [];
@@ -121,26 +124,48 @@ class _ForReturnPageState extends State<ForReturnPage> {
   Future<void> _fetchRenewalBorrows() async {
     if (userCampus == null) return;
     try {
+      // Fetch renewal applications that need bike inspection/return handling
+      // Status: renewal_medical_approved (student/personnel need bike inspection)
+      // Status: active_renewal (currently borrowed, for return)
+      // Status: renewal_bike_damage_reported (self-reported damage, needs verification)
       final appsResponse = await supabase
-          .from('renewal_applications')
+          .from('borrowing_applications_version2')
           .select('*')
-          .eq('status', selectedRenewalStatus)
+          .inFilter('status', [
+            selectedRenewalStatus,
+            'renewal_bike_damage_reported',
+          ])
           .ilike('campus', userCampus!)
           .order('created_at', ascending: false);
 
       final apps = List<Map<String, dynamic>>.from(appsResponse);
       final enriched = await Future.wait(apps.map((app) async {
         try {
-          final sessionId = app['session_id'];
-          if (sessionId == null) return {...app, 'borrowing_sessions': null};
           final sessionRes = await supabase
               .from('borrowing_sessions')
               .select('id, bike_id, start_time, end_time, status')
-              .eq('id', sessionId)
+              .eq('application_id', app['id'])
+              .order('created_at', ascending: false)
+              .limit(1)
               .maybeSingle();
-          return {...app, 'borrowing_sessions': sessionRes};
+          
+          // Also fetch bike info if available
+          Map<String, dynamic>? bikeInfo;
+          if (sessionRes != null && sessionRes['bike_id'] != null) {
+            bikeInfo = await supabase
+                .from('bikes')
+                .select('*')
+                .eq('id', sessionRes['bike_id'])
+                .maybeSingle();
+          }
+          
+          return {
+            ...app, 
+            'borrowing_sessions': sessionRes,
+            'bike_info': bikeInfo,
+          };
         } catch (_) {
-          return {...app, 'borrowing_sessions': null};
+          return {...app, 'borrowing_sessions': null, 'bike_info': null};
         }
       }));
       setState(() => renewalActiveBorrows = enriched);
@@ -188,7 +213,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
         : '${app['first_name'] ?? app['firstName'] ?? ''} ${app['last_name'] ?? app['lastName'] ?? ''}'.trim();
     final bikeNumber = type == 'short_term'
         ? (app['assigned_bike_number'] ?? 'N/A')
-        : (app['bike_number'] ?? app['bikeNumber'] ?? 'N/A');
+        : (app['bike_number'] ?? app['bikeNumber'] ?? app['assigned_bike_number'] ?? 'N/A');
     final applicationId = app['id']?.toString() ?? '';
 
     showDialog(
@@ -201,7 +226,25 @@ class _ForReturnPageState extends State<ForReturnPage> {
         bikeNumber: bikeNumber,
         applicationType: type,
         startTime: session?['start_time'],
+        bikeInfo: app['bike_info'],
+        userType: app['user_type'],
+        suspensionCount: app['suspension_count'] ?? 0,
         onReturned: () async {
+          await _fetchAll();
+          setState(() {});
+        },
+      ),
+    );
+  }
+
+  void _showRenewalBikeInspectionDialog(Map<String, dynamic> app) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _RenewalBikeInspectionDialog(
+        application: app,
+        userCampus: userCampus,
+        onComplete: () async {
           await _fetchAll();
           setState(() {});
         },
@@ -290,15 +333,15 @@ class _ForReturnPageState extends State<ForReturnPage> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('GSO Bike Return',
+                const Text('GSO Bike Return & Inspection',
                     style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF1A1A1A))),
                 Text(
                   userCampus != null
-                      ? 'Campus: ${userCampus!.toUpperCase()}  •  Process bike returns'
-                      : 'Process bike returns',
+                      ? 'Campus: ${userCampus!.toUpperCase()}  •  Process returns & inspections'
+                      : 'Process bike returns & inspections',
                   style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                 ),
               ],
@@ -325,8 +368,8 @@ class _ForReturnPageState extends State<ForReturnPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           _mainToggleBtn('new', 'New Borrowers', Icons.fiber_new_rounded, null),
-          _mainToggleBtn('renewal', 'Renewal Borrowers',
-              Icons.autorenew_rounded, null),
+          _mainToggleBtn('renewal', 'Renewal Inspection',
+              Icons.autorenew_rounded, const Color(0xFF7B1FA2)),
           if (_isShortTermEnabled)
             _mainToggleBtn('short_term', 'Short Term',
                 Icons.access_time_rounded, const Color(0xFFF57C00)),
@@ -392,21 +435,22 @@ class _ForReturnPageState extends State<ForReturnPage> {
             isNew: true),
       ]);
     } else if (selectedTab == 'renewal') {
-      return Row(children: [
-        _statusChip(
-            value: 'renewal_gso',
-            label: 'Active Borrows',
-            icon: Icons.pedal_bike_rounded,
-            color: const Color(0xFF7B1FA2),
-            isNew: false),
-        const SizedBox(width: 12),
-        _statusChip(
-            value: 'ride_completed',
-            label: 'Returned',
-            icon: Icons.assignment_turned_in_rounded,
-            color: const Color(0xFF00695C),
-            isNew: false),
-      ]);
+      return SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
+              Icons.search_rounded, const Color(0xFFF57C00)),
+          const SizedBox(width: 12),
+          _renewalStatusChip('renewal_bike_damage_reported', 'Damage Reported',
+              Icons.report_problem_rounded, const Color(0xFFD32F2F)),
+          const SizedBox(width: 12),
+          _renewalStatusChip('active_renewal', 'Active Renewal',
+              Icons.pedal_bike_rounded, const Color(0xFF1565C0)),
+          const SizedBox(width: 12),
+          _renewalStatusChip('renewal_pending_next_sem', 'Pending Next Sem',
+              Icons.schedule_rounded, Colors.teal),
+        ]),
+      );
     } else if (selectedTab == 'short_term') {
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -426,6 +470,49 @@ class _ForReturnPageState extends State<ForReturnPage> {
       );
     }
     return const SizedBox.shrink();
+  }
+
+  Widget _renewalStatusChip(
+      String value, String label, IconData icon, Color color) {
+    final isSelected = selectedRenewalStatus == value;
+    return GestureDetector(
+      onTap: () {
+        setState(() => selectedRenewalStatus = value);
+        _fetchRenewalBorrows();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? color : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: isSelected ? color : Colors.grey[300]!, width: 1.5),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: color.withOpacity(0.3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4))
+                ]
+              : [],
+        ),
+        child: Row(
+          children: [
+            Icon(icon,
+                size: 16,
+                color: isSelected ? Colors.white : color),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isSelected ? Colors.white : color)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _shortTermStatusChip(
@@ -478,16 +565,11 @@ class _ForReturnPageState extends State<ForReturnPage> {
     required Color color,
     required bool isNew,
   }) {
-    final isSelected =
-        isNew ? selectedNewStatus == value : selectedRenewalStatus == value;
+    final isSelected = selectedNewStatus == value;
     return GestureDetector(
       onTap: () {
-        setState(() {
-          if (isNew) selectedNewStatus = value;
-          else selectedRenewalStatus = value;
-        });
-        if (isNew) _fetchNewBorrows();
-        else _fetchRenewalBorrows();
+        setState(() => selectedNewStatus = value);
+        _fetchNewBorrows();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -542,14 +624,241 @@ class _ForReturnPageState extends State<ForReturnPage> {
 
   Widget _buildRenewalBorrowsList() {
     if (renewalActiveBorrows.isEmpty) {
-      return _emptyState(selectedRenewalStatus == 'renewal_gso'
-          ? 'No active renewal borrows at the moment'
-          : 'No returned renewal bikes yet');
+      return _emptyState(_getRenewalEmptyMessage());
     }
     return Column(
         children: renewalActiveBorrows
-            .map((app) => _borrowCard(app, 'renewal'))
+            .map((app) => _renewalInspectionCard(app))
             .toList());
+  }
+
+  String _getRenewalEmptyMessage() {
+    switch (selectedRenewalStatus) {
+      case 'renewal_medical_approved':
+        return 'No renewals pending bike inspection';
+      case 'renewal_bike_damage_reported':
+        return 'No damage reports to verify';
+      case 'active_renewal':
+        return 'No active renewal borrows';
+      case 'renewal_pending_next_sem':
+        return 'No students pending next semester';
+      default:
+        return 'No renewal applications';
+    }
+  }
+
+  Widget _renewalInspectionCard(Map<String, dynamic> app) {
+    final firstName = app['first_name'] ?? '';
+    final lastName = app['last_name'] ?? '';
+    final userType = app['user_type'] ?? 'student';
+    final status = app['status'] ?? '';
+    final bikeNumber = app['assigned_bike_number'] ?? app['renewal_gso_bike_number'] ?? 'N/A';
+    final suspensionCount = app['suspension_count'] ?? 0;
+    final isDamageReported = status == 'renewal_bike_damage_reported';
+
+    Color statusColor;
+    String statusLabel;
+    IconData statusIcon;
+
+    switch (status) {
+      case 'renewal_medical_approved':
+        statusColor = const Color(0xFFF57C00);
+        statusLabel = 'Pending Inspection';
+        statusIcon = Icons.search_rounded;
+        break;
+      case 'renewal_bike_damage_reported':
+        statusColor = const Color(0xFFD32F2F);
+        statusLabel = 'Damage Reported';
+        statusIcon = Icons.report_problem_rounded;
+        break;
+      case 'active_renewal':
+        statusColor = const Color(0xFF1565C0);
+        statusLabel = 'Active Renewal';
+        statusIcon = Icons.pedal_bike_rounded;
+        break;
+      case 'renewal_pending_next_sem':
+        statusColor = Colors.teal;
+        statusLabel = 'Pending Next Sem';
+        statusIcon = Icons.schedule_rounded;
+        break;
+      default:
+        statusColor = Colors.grey;
+        statusLabel = status.replaceAll('_', ' ').toUpperCase();
+        statusIcon = Icons.info_rounded;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 16,
+              offset: const Offset(0, 4))
+        ],
+        border: Border.all(
+          color: isDamageReported 
+              ? const Color(0xFFD32F2F).withOpacity(0.4)
+              : statusColor.withOpacity(0.2), 
+          width: isDamageReported ? 2 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(statusIcon, color: statusColor, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Text('$firstName $lastName',
+                          style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1A1A1A))),
+                      const SizedBox(width: 8),
+                      _badge('Renewal', const Color(0xFF7B1FA2)),
+                      const SizedBox(width: 6),
+                      _badge(
+                        userType == 'student' ? 'Student' : 'Personnel',
+                        userType == 'student' 
+                            ? const Color(0xFF1565C0) 
+                            : const Color(0xFF388E3C),
+                      ),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text(
+                      userType == 'student'
+                          ? 'SR Code: ${app['sr_code'] ?? app['id_no'] ?? "N/A"}'
+                          : 'Employee No: ${app['employee_no'] ?? app['id_no'] ?? "N/A"}',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(children: [
+                      Icon(Icons.pedal_bike_rounded,
+                          size: 14, color: Colors.grey[500]),
+                      const SizedBox(width: 4),
+                      Text('Bike No: $bikeNumber',
+                          style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                      if (suspensionCount > 0) ...[
+                        const SizedBox(width: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red[100],
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Prior Offense: $suspensionCount',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red[900],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ]),
+                    const SizedBox(height: 10),
+                    _statusBadge(statusLabel, statusColor),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          
+          // Show damage details if reported
+          if (isDamageReported && app['renewal_gso_damage_remarks'] != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFEBEE),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFD32F2F).withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.warning_amber_rounded, 
+                        color: Color(0xFFD32F2F), size: 16),
+                    const SizedBox(width: 6),
+                    const Text('Self-Reported Damage',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFD32F2F))),
+                  ]),
+                  const SizedBox(height: 6),
+                  Text(
+                    app['renewal_gso_damage_remarks'] ?? 'No details provided',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          
+          const SizedBox(height: 16),
+          
+          // Action buttons based on status
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (status == 'renewal_medical_approved' || 
+                  status == 'renewal_bike_damage_reported')
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1565C0),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () => _showRenewalBikeInspectionDialog(app),
+                  icon: const Icon(Icons.bike_scooter_rounded, size: 18),
+                  label: Text(
+                    isDamageReported ? 'Verify Damage' : 'Inspect Bike',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              if (status == 'active_renewal')
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00695C),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () => _showReturnDialog(app, 'renewal'),
+                  icon: const Icon(Icons.assignment_return_rounded, size: 18),
+                  label: const Text('Process Return',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Short Term Borrows ──────────────────────────────────────
@@ -765,7 +1074,6 @@ class _ForReturnPageState extends State<ForReturnPage> {
 
     final isActive = status == 'active' || status == 'renewal_gso';
     final isReturned = status == 'ride_completed';
-    final isNew = type == 'new';
 
     final Color statusColor = isActive
         ? const Color(0xFF1565C0)
@@ -841,12 +1149,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF1A1A1A))),
                   const SizedBox(width: 8),
-                  _badge(
-                    isNew ? 'New' : 'Renewal',
-                    isNew
-                        ? const Color(0xFF1565C0)
-                        : const Color(0xFF7B1FA2),
-                  ),
+                  _badge('New', const Color(0xFF1565C0)),
                 ]),
                 const SizedBox(height: 4),
                 Text(displayId,
@@ -940,7 +1243,746 @@ class _ForReturnPageState extends State<ForReturnPage> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// RETURN DIALOG
+// RENEWAL BIKE INSPECTION DIALOG
+// ═══════════════════════════════════════════════════════════════════
+class _RenewalBikeInspectionDialog extends StatefulWidget {
+  final Map<String, dynamic> application;
+  final String? userCampus;
+  final VoidCallback onComplete;
+
+  const _RenewalBikeInspectionDialog({
+    required this.application,
+    required this.userCampus,
+    required this.onComplete,
+  });
+
+  @override
+  State<_RenewalBikeInspectionDialog> createState() =>
+      _RenewalBikeInspectionDialogState();
+}
+
+class _RenewalBikeInspectionDialogState
+    extends State<_RenewalBikeInspectionDialog> {
+  final supabase = Supabase.instance.client;
+
+  bool _isSubmitting = false;
+  String _inspectionResult = 'no_damage'; // 'no_damage' or 'damaged'
+
+  // Condition checklist
+  bool _frameOk = true;
+  bool _wheelsOk = true;
+  bool _brakesOk = true;
+  bool _chainGearOk = true;
+  bool _saddleOk = true;
+  bool _lightsOk = true;
+
+  // Damage details
+  final TextEditingController _damageRemarksController = TextEditingController();
+  Uint8List? _damagePhotoBytes;
+  String? _damagePhotoName;
+
+  // GSO signature
+  final TextEditingController _gsoNameController = TextEditingController();
+
+  bool get _isStudent => widget.application['user_type'] == 'student';
+  bool get _isDamageReported =>
+      widget.application['status'] == 'renewal_bike_damage_reported';
+  int get _suspensionCount => widget.application['suspension_count'] ?? 0;
+
+  bool get _allConditionsOk =>
+      _frameOk && _wheelsOk && _brakesOk && _chainGearOk && _saddleOk && _lightsOk;
+
+  bool get _canSubmit =>
+      _gsoNameController.text.trim().isNotEmpty &&
+      (_inspectionResult == 'no_damage' || _damageRemarksController.text.trim().isNotEmpty);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGsoName();
+    
+    // If damage was self-reported, pre-fill remarks
+    if (_isDamageReported && widget.application['renewal_gso_damage_remarks'] != null) {
+      _damageRemarksController.text = widget.application['renewal_gso_damage_remarks'];
+      _inspectionResult = 'damaged';
+    }
+    
+    _gsoNameController.addListener(() => setState(() {}));
+    _damageRemarksController.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _damageRemarksController.dispose();
+    _gsoNameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadGsoName() async {
+    try {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId != null) {
+        final profile = await supabase
+            .from('profiles')
+            .select('email')
+            .eq('id', userId)
+            .maybeSingle();
+        if (profile != null && mounted) {
+          final email = profile['email'] as String;
+          _gsoNameController.text =
+              email.split('@')[0].replaceAll('.', ' ').toUpperCase();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading GSO name: $e');
+    }
+  }
+
+  Future<void> _pickDamagePhoto() async {
+    final result = await FilePicker.platform
+        .pickFiles(type: FileType.image, allowMultiple: false);
+    if (result != null && result.files.isNotEmpty) {
+      final bytes = result.files.first.bytes;
+      final fileName = result.files.first.name;
+      if (bytes != null) {
+        setState(() {
+          _damagePhotoBytes = bytes;
+          _damagePhotoName = fileName;
+        });
+      }
+    }
+  }
+
+  Future<String?> _uploadDamagePhoto() async {
+    if (_damagePhotoBytes == null) return null;
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final userId = supabase.auth.currentUser?.id ?? 'unknown';
+      final path = 'damage_photos/${userId}_${timestamp}_$_damagePhotoName';
+      await supabase.storage.from('bike-images').uploadBinary(path, _damagePhotoBytes!);
+      return supabase.storage.from('bike-images').getPublicUrl(path);
+    } catch (e) {
+      debugPrint('Upload damage photo error: $e');
+      return null;
+    }
+  }
+
+  Future<void> _submitInspection() async {
+    if (!_canSubmit) return;
+    setState(() => _isSubmitting = true);
+
+    try {
+      final applicationId = widget.application['id'];
+      final now = DateTime.now().toUtc().toIso8601String();
+      final currentUserId = supabase.auth.currentUser?.id;
+
+      if (_inspectionResult == 'no_damage') {
+        // NO DAMAGE PATH
+        if (_isStudent) {
+          // Student: No damage → renewal_pending_next_sem
+          // They wait until next semester, then come back for new bike assignment
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_pending_next_sem',
+            'renewal_gso_checked_by': _gsoNameController.text.trim(),
+            'updated_at': now,
+          }).eq('id', applicationId);
+
+          // Return the bike to available
+          final bikeId = widget.application['assigned_bike_id'] ?? 
+                         widget.application['renewal_gso_bike_id'];
+          if (bikeId != null) {
+            await supabase.from('bikes').update({
+              'status': 'available',
+              'current_user_id': null,
+            }).eq('id', bikeId);
+          }
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Student set to pending next semester. Bike returned.'),
+                backgroundColor: Colors.teal,
+              ),
+            );
+          }
+        } else {
+          // Personnel: No damage → renewal_bike_checked
+          // Ready for QR scan to activate renewal
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_bike_checked',
+            'renewal_gso_checked_by': _gsoNameController.text.trim(),
+            'updated_at': now,
+          }).eq('id', applicationId);
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Bike checked. Personnel can now scan QR for renewal.'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        }
+      } else {
+        // DAMAGED PATH
+        String? damagePhotoUrl;
+        if (_damagePhotoBytes != null) {
+          damagePhotoUrl = await _uploadDamagePhoto();
+        }
+
+        // Create bike damage report
+        final bikeId = widget.application['assigned_bike_id'] ?? 
+                       widget.application['renewal_gso_bike_id'];
+        
+        int? reportId;
+        if (bikeId != null) {
+          final reportResponse = await supabase.from('bike_reports').insert({
+            'bike_id': bikeId,
+            'application_id': applicationId,
+            'is_renewal': true,
+            'report_type': 'damage',
+            'description': _damageRemarksController.text.trim(),
+            'photo_url': damagePhotoUrl,
+            'reported_by': currentUserId,
+            'status': 'pending',
+            'created_at': now,
+          }).select('id').single();
+          reportId = reportResponse['id'];
+        }
+
+        // Determine next status based on user type
+        final forwardedTo = _isStudent ? 'forwarded_discipline' : 'forwarded_hrmo';
+
+        await supabase.from('borrowing_applications_version2').update({
+          'status': 'renewal_bike_damaged',
+          'renewal_gso_checked_by': _gsoNameController.text.trim(),
+          'renewal_gso_damage_remarks': _damageRemarksController.text.trim(),
+          'renewal_gso_damage_photo_url': damagePhotoUrl,
+          'renewal_gso_damage_report_id': reportId,
+          'renewal_forwarded_by': _gsoNameController.text.trim(),
+          'renewal_forwarded_remarks': 'Bike damage confirmed during inspection',
+          'updated_at': now,
+        }).eq('id', applicationId);
+
+        // Then update to forwarded status
+        await supabase.from('borrowing_applications_version2').update({
+          'status': forwardedTo,
+          'updated_at': now,
+        }).eq('id', applicationId);
+
+        // Set bike to maintenance
+        if (bikeId != null) {
+          await supabase.from('bikes').update({
+            'status': 'maintenance',
+            'current_user_id': null,
+          }).eq('id', bikeId);
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Damage reported. Forwarded to ${_isStudent ? 'Discipline Office' : 'HRMO'}.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+
+      widget.onComplete();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      debugPrint('Submit inspection error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName = widget.application['first_name'] ?? '';
+    final lastName = widget.application['last_name'] ?? '';
+    final bikeNumber = widget.application['assigned_bike_number'] ?? 
+                       widget.application['renewal_gso_bike_number'] ?? 'N/A';
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 650,
+        constraints: const BoxConstraints(maxHeight: 800),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [Color(0xFF7B1FA2), Color(0xFFAB47BC)]),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.bike_scooter_rounded,
+                      color: Colors.white, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _isDamageReported 
+                            ? 'Verify Damage Report' 
+                            : 'Bike Inspection',
+                        style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A)),
+                      ),
+                      Text(
+                        '$firstName $lastName • Bike #$bikeNumber',
+                        style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                _typeBadge(_isStudent ? 'Student' : 'Personnel',
+                    _isStudent ? const Color(0xFF1565C0) : const Color(0xFF388E3C)),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Warning if prior offense
+                    if (_suspensionCount > 0) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFEBEE),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: const Color(0xFFD32F2F).withOpacity(0.4)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.warning_amber_rounded,
+                                color: Color(0xFFD32F2F), size: 24),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Prior Offense Record',
+                                    style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFD32F2F)),
+                                  ),
+                                  Text(
+                                    _suspensionCount >= 1
+                                        ? 'This borrower has $_suspensionCount prior offense(s). Another damage will result in TERMINATION.'
+                                        : 'First offense will result in 1-semester suspension.',
+                                    style: TextStyle(
+                                        fontSize: 12, color: Colors.red[800]),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Self-reported damage notice
+                    if (_isDamageReported) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF3E0),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: const Color(0xFFF57C00).withOpacity(0.4)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              const Icon(Icons.info_outline_rounded,
+                                  color: Color(0xFFF57C00), size: 18),
+                              const SizedBox(width: 8),
+                              const Text('Self-Reported Damage',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFF57C00))),
+                            ]),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Borrower reported: ${widget.application['renewal_gso_damage_remarks'] ?? 'No details'}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Condition Checklist
+                    const Text('Bike Condition Checklist',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A))),
+                    const SizedBox(height: 4),
+                    Text('Check each component during inspection:',
+                        style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                    const SizedBox(height: 14),
+
+                    _conditionCheck('Frame & Body', 'No visible damage or cracks',
+                        _frameOk, (v) => setState(() => _frameOk = v!)),
+                    _conditionCheck('Wheels & Tires', 'Properly inflated, no damage',
+                        _wheelsOk, (v) => setState(() => _wheelsOk = v!)),
+                    _conditionCheck('Brakes', 'Front and rear functioning',
+                        _brakesOk, (v) => setState(() => _brakesOk = v!)),
+                    _conditionCheck('Chain & Gears', 'Lubricated, shifting properly',
+                        _chainGearOk, (v) => setState(() => _chainGearOk = v!)),
+                    _conditionCheck('Saddle & Handlebars', 'Secured and adjusted',
+                        _saddleOk, (v) => setState(() => _saddleOk = v!)),
+                    _conditionCheck('Lights & Reflectors', 'Present and working',
+                        _lightsOk, (v) => setState(() => _lightsOk = v!)),
+
+                    const SizedBox(height: 24),
+
+                    // Inspection Result
+                    const Text('Inspection Result *',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A))),
+                    const SizedBox(height: 12),
+
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _resultOption(
+                            'no_damage',
+                            'No Damage',
+                            Icons.check_circle_rounded,
+                            const Color(0xFF388E3C),
+                            _isStudent
+                                ? 'Bike returned, student waits for next semester'
+                                : 'Ready for QR scan activation',
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _resultOption(
+                            'damaged',
+                            'Damaged',
+                            Icons.report_problem_rounded,
+                            const Color(0xFFD32F2F),
+                            _isStudent
+                                ? 'Forward to Discipline Office'
+                                : 'Forward to HRMO',
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Damage details (if damaged selected)
+                    if (_inspectionResult == 'damaged') ...[
+                      const SizedBox(height: 20),
+
+                      const Text('Damage Details *',
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1A1A1A))),
+                      const SizedBox(height: 8),
+
+                      TextField(
+                        controller: _damageRemarksController,
+                        maxLines: 3,
+                        decoration: InputDecoration(
+                          hintText: 'Describe the damage in detail...',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(
+                                color: Color(0xFFD32F2F), width: 1.5),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      const Text('Damage Photo (Optional)',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF1A1A1A))),
+                      const SizedBox(height: 8),
+
+                      GestureDetector(
+                        onTap: _pickDamagePhoto,
+                        child: Container(
+                          height: 120,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey[400]!),
+                            borderRadius: BorderRadius.circular(8),
+                            color: Colors.grey[50],
+                          ),
+                          child: _damagePhotoBytes == null
+                              ? Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.add_a_photo_rounded,
+                                          size: 32, color: Colors.grey[400]),
+                                      const SizedBox(height: 8),
+                                      Text('Click to upload photo',
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.grey[500])),
+                                    ],
+                                  ),
+                                )
+                              : Stack(
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.memory(_damagePhotoBytes!,
+                                          fit: BoxFit.cover,
+                                          width: double.infinity,
+                                          height: double.infinity),
+                                    ),
+                                    Positioned(
+                                      top: 4,
+                                      right: 4,
+                                      child: IconButton(
+                                        icon: const Icon(Icons.close_rounded,
+                                            color: Colors.white),
+                                        onPressed: () => setState(() {
+                                          _damagePhotoBytes = null;
+                                          _damagePhotoName = null;
+                                        }),
+                                        style: IconButton.styleFrom(
+                                            backgroundColor:
+                                                Colors.black54),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: 24),
+
+                    // GSO Name
+                    const Text('GSO Officer Name *',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A))),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _gsoNameController,
+                      decoration: InputDecoration(
+                        hintText: 'Enter officer name',
+                        prefixIcon: const Icon(Icons.badge_rounded),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Action buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Cancel',
+                      style: TextStyle(color: Colors.grey[600])),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _canSubmit
+                        ? (_inspectionResult == 'damaged'
+                            ? const Color(0xFFD32F2F)
+                            : const Color(0xFF388E3C))
+                        : Colors.grey[300],
+                    foregroundColor:
+                        _canSubmit ? Colors.white : Colors.grey[500],
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: _isSubmitting || !_canSubmit ? null : _submitInspection,
+                  icon: _isSubmitting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : Icon(
+                          _inspectionResult == 'damaged'
+                              ? Icons.report_problem_rounded
+                              : Icons.check_circle_rounded,
+                          size: 18),
+                  label: Text(
+                    _isSubmitting
+                        ? 'Processing...'
+                        : _inspectionResult == 'damaged'
+                            ? 'Report Damage & Forward'
+                            : 'Confirm No Damage',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _typeBadge(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color)),
+      child: Text(label,
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+    );
+  }
+
+  Widget _conditionCheck(String label, String description, bool value,
+      void Function(bool?) onChanged) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: value ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: value
+                ? const Color(0xFF388E3C).withOpacity(0.3)
+                : const Color(0xFFD32F2F).withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Checkbox(
+            value: value,
+            onChanged: onChanged,
+            activeColor: const Color(0xFF388E3C),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: value
+                            ? const Color(0xFF388E3C)
+                            : const Color(0xFFD32F2F))),
+                Text(description,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+              ],
+            ),
+          ),
+          Icon(
+            value ? Icons.check_circle_rounded : Icons.cancel_rounded,
+            color: value ? const Color(0xFF388E3C) : const Color(0xFFD32F2F),
+            size: 18,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _resultOption(String value, String label, IconData icon, Color color,
+      String description) {
+    final isSelected = _inspectionResult == value;
+    return GestureDetector(
+      onTap: () => setState(() => _inspectionResult = value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.1) : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: isSelected ? color : Colors.grey[300]!, width: 2),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: color.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2))
+                ]
+              : [],
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: isSelected ? color : Colors.grey[400], size: 32),
+            const SizedBox(height: 8),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: isSelected ? color : Colors.grey[600])),
+            const SizedBox(height: 4),
+            Text(description,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RETURN DIALOG (for active borrows)
 // ═══════════════════════════════════════════════════════════════════
 class _ReturnDialog extends StatefulWidget {
   final String applicationId;
@@ -949,6 +1991,9 @@ class _ReturnDialog extends StatefulWidget {
   final String bikeNumber;
   final String applicationType;
   final dynamic startTime;
+  final Map<String, dynamic>? bikeInfo;
+  final String? userType;
+  final int suspensionCount;
   final VoidCallback onReturned;
 
   const _ReturnDialog({
@@ -958,6 +2003,9 @@ class _ReturnDialog extends StatefulWidget {
     required this.bikeNumber,
     required this.applicationType,
     required this.startTime,
+    this.bikeInfo,
+    this.userType,
+    this.suspensionCount = 0,
     required this.onReturned,
   });
 
@@ -985,8 +2033,6 @@ class _ReturnDialogState extends State<_ReturnDialog>
   String get _qrData =>
       'RETURN_${widget.sessionId ?? widget.applicationId}';
 
-  // ── Short term polls borrowing_sessions for 'completed'
-  // ── New/Renewal polls borrowing_sessions for 'ride_completed'
   String get _completedStatus =>
       _isShortTerm ? 'completed' : 'ride_completed';
 
@@ -1242,7 +2288,6 @@ class _ReturnDialogState extends State<_ReturnDialog>
           ),
         ),
         const SizedBox(width: 8),
-        // Always visible close button
         IconButton(
           icon: const Icon(Icons.close_rounded),
           onPressed: () => Navigator.pop(context),
@@ -1326,7 +2371,7 @@ class _ReturnDialogState extends State<_ReturnDialog>
                 _instructionRow(
                     '4', 'Borrower confirms return on their phone'),
                 _instructionRow('5',
-                    'Status auto-updates to "${_completedStatus}" ✅'),
+                    'Status auto-updates to "$_completedStatus" ✅'),
               ],
             ),
           ),
