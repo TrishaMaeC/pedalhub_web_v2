@@ -112,7 +112,7 @@ class _LoginPageState extends State<LoginPage> {
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-                builder: (_) => const GuidanceRenewalApprovalPage()),
+                builder: (_) => const OsdDashboardPage()),
           );
           break;
         default:
