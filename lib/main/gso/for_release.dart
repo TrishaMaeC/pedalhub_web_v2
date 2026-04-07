@@ -24,7 +24,12 @@ class _ForReleasePageState extends State<ForReleasePage> {
   bool isLoading = true;
   String selectedTab = 'new';
   String selectedNewStatus = 'for_release';
-  String selectedRenewalStatus = 'renewal_medical_approved';
+
+  // ── Renewal now has two sub-tabs: personnel (renewal_medical_approved)
+  //    and student (renewal_pending_next_sem). We expose both via one filter
+  //    list, but store the selected value here.
+  String selectedRenewalStatus = 'renewal_pending_next_sem';
+
   String selectedShortTermStatus = 'pending';
 
   List<BorrowingApplicationV2Model> newApplications = [];
@@ -112,21 +117,31 @@ class _ForReleasePageState extends State<ForReleasePage> {
   }
 
   Future<void> _fetchRenewalApplications() async {
-    if (userCampus == null) return;
-    try {
-      final response = await supabase
-          .from('renewal_applications')
-          .select('*')
-          .eq('status', selectedRenewalStatus)
-          .ilike('campus', userCampus!)
-          .order('created_at', ascending: false);
-      setState(() {
-        renewalApplications = List<Map<String, dynamic>>.from(response);
-      });
-    } catch (e) {
-      debugPrint('Fetch renewal error: $e');
-    }
+  if (userCampus == null) return;
+  try {
+    // ── Status meanings for the Release page (STUDENTS ONLY):
+    //
+    //  renewal_pending_next_sem  → Student passed inspection in For Return page
+    //                               and is waiting for next semester bike assignment.
+    //  active_renewal            → Already assigned new bike for the semester.
+    //
+    // Note: Personnel renewals are handled in the For Return page after
+    // bike inspection, where they are immediately released with their current bike.
+    
+    final response = await supabase
+        .from('borrowing_applications_version2')
+        .select('*')
+        .eq('status', selectedRenewalStatus)
+        .eq('user_type', 'student')  // ← ADD THIS LINE
+        .ilike('campus', userCampus!)
+        .order('created_at', ascending: false);
+    setState(() {
+      renewalApplications = List<Map<String, dynamic>>.from(response);
+    });
+  } catch (e) {
+    debugPrint('Fetch renewal error: $e');
   }
+}
 
   Future<void> _fetchShortTermRequests() async {
     if (userCampus == null) return;
@@ -145,26 +160,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
     }
   }
 
-  Future<Map<String, dynamic>?> _fetchBikeInfo(int? sessionId) async {
-    if (sessionId == null) return null;
-    try {
-      final session = await supabase
-          .from('borrowing_sessions')
-          .select('bike_id')
-          .eq('id', sessionId)
-          .maybeSingle();
-      if (session == null || session['bike_id'] == null) return null;
-      return await supabase
-          .from('bikes')
-          .select('*')
-          .eq('id', session['bike_id'])
-          .maybeSingle();
-    } catch (e) {
-      debugPrint('Fetch bike error: $e');
-      return null;
-    }
-  }
-
+  // ── Release dialog for NEW applications ──────────────────────────
   void _showReleaseDialog(BorrowingApplicationV2Model app) {
     showDialog(
       context: context,
@@ -176,6 +172,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
         applicationType: 'new',
         bikeInfo: null,
         userCampus: userCampus,
+        userType: app.userType,
         onApproved: () async {
           await _fetchNewApplications();
           setState(() {});
@@ -188,12 +185,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
     );
   }
 
-  void _showBikeConditionDialog(Map<String, dynamic> app) async {
-    final sessionId = app['session_id'] != null
-        ? int.tryParse(app['session_id'].toString())
-        : null;
-    final bikeInfo = await _fetchBikeInfo(sessionId);
-    if (!mounted) return;
+  // ── Release dialog for RENEWAL applications ───────────────────────
+  void _showRenewalReleaseDialog(Map<String, dynamic> app) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -201,10 +194,13 @@ class _ForReleasePageState extends State<ForReleasePage> {
         applicationId: app['id'].toString(),
         applicantName:
             '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim(),
-        bikeNumber: app['bike_number'] ?? 'N/A',
+        // For renewals the bike is not assigned yet — it will be assigned
+        // inside the dialog. Pass 'N/A' as placeholder.
+        bikeNumber: 'N/A',
         applicationType: 'renewal',
-        bikeInfo: bikeInfo,
+        bikeInfo: null,
         userCampus: userCampus,
+        userType: app['user_type'],
         onApproved: () async {
           await _fetchRenewalApplications();
           setState(() {});
@@ -217,6 +213,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
     );
   }
 
+  // ── Release dialog for SHORT-TERM requests ────────────────────────
   void _showShortTermReleaseDialog(Map<String, dynamic> request) {
     showDialog(
       context: context,
@@ -228,6 +225,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
         applicationType: 'short_term',
         bikeInfo: null,
         userCampus: userCampus,
+        userType: request['user_type'],
         shortTermRequest: request,
         onApproved: () async {
           await _fetchShortTermRequests();
@@ -246,8 +244,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Decline Request'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -321,8 +318,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
     showDialog(
       context: context,
       builder: (context) => Dialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Container(
           width: 700,
           constraints: const BoxConstraints(maxHeight: 700),
@@ -334,8 +330,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('Request Details',
-                      style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.bold)),
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                   IconButton(
                     icon: const Icon(Icons.close),
                     onPressed: () => Navigator.pop(context),
@@ -349,9 +345,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (request['profile_pic_url'] != null &&
-                          request['profile_pic_url']
-                              .toString()
-                              .isNotEmpty) ...[
+                          request['profile_pic_url'].toString().isNotEmpty) ...[
                         Center(
                           child: CircleAvatar(
                             radius: 40,
@@ -362,25 +356,22 @@ class _ForReleasePageState extends State<ForReleasePage> {
                         ),
                         const SizedBox(height: 16),
                       ],
-                      _detailRow(
-                          'Full Name', request['full_name'] ?? 'N/A'),
+                      _detailRow('Full Name', request['full_name'] ?? 'N/A'),
                       _detailRow('User Type',
                           (request['user_type'] ?? 'N/A').toUpperCase()),
                       if (request['user_type'] == 'student')
-                        _detailRow(
-                            'SR Code', request['sr_code'] ?? 'N/A'),
+                        _detailRow('SR Code', request['sr_code'] ?? 'N/A'),
                       if (request['user_type'] == 'staff')
-                        _detailRow('Employee No.',
-                            request['employee_no'] ?? 'N/A'),
-                      _detailRow(
-                          'Phone', request['phone_number'] ?? 'N/A'),
+                        _detailRow(
+                            'Employee No.', request['employee_no'] ?? 'N/A'),
+                      _detailRow('Phone', request['phone_number'] ?? 'N/A'),
                       _detailRow('Campus',
                           (request['campus'] ?? 'N/A').toUpperCase()),
                       const Divider(height: 24),
                       _detailRow('Destination',
                           request['destination_name'] ?? 'N/A'),
-                      _detailRow('Address',
-                          request['destination_address'] ?? 'N/A'),
+                      _detailRow(
+                          'Address', request['destination_address'] ?? 'N/A'),
                       _detailRow('Duration',
                           '${request['selected_duration_minutes']} minutes'),
                       _detailRow('Purpose',
@@ -397,11 +388,9 @@ class _ForReleasePageState extends State<ForReleasePage> {
                         _detailRow(
                             'GSO Officer', request['gso_officer_name']),
                       if (request['rejection_reason'] != null &&
-                          request['rejection_reason']
-                              .toString()
-                              .isNotEmpty)
-                        _detailRow('Rejection Reason',
-                            request['rejection_reason']),
+                          request['rejection_reason'].toString().isNotEmpty)
+                        _detailRow(
+                            'Rejection Reason', request['rejection_reason']),
                     ],
                   ),
                 ),
@@ -456,6 +445,10 @@ class _ForReleasePageState extends State<ForReleasePage> {
       );
     }
   }
+
+  // ════════════════════════════════════════════════════════════════
+  // BUILD
+  // ════════════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -574,8 +567,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-          color: Colors.grey[200],
-          borderRadius: BorderRadius.circular(12)),
+          color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -602,8 +594,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
       onTap: () => setState(() => selectedTab = value),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected ? color : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
@@ -626,8 +617,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color:
-                        isSelected ? Colors.white : Colors.grey[500])),
+                    color: isSelected ? Colors.white : Colors.grey[500])),
           ],
         ),
       ),
@@ -635,45 +625,44 @@ class _ForReleasePageState extends State<ForReleasePage> {
   }
 
   Widget _buildStatusFilter() {
-    if (selectedTab == 'new') {
-      return Row(children: [
-        _statusChip(
-            value: 'for_release',
-            label: 'Pending Release',
-            icon: Icons.inventory_rounded,
-            color: const Color(0xFFF57C00),
-            isNew: true),
+  if (selectedTab == 'new') {
+    return Row(children: [
+      _statusChip(
+          value: 'renewal_bike_returned',
+          label: 'Pending Release',
+          icon: Icons.inventory_rounded,
+          color: const Color(0xFFF57C00),
+          isNew: true),
+      const SizedBox(width: 12),
+      _statusChip(
+          value: 'active',
+          label: 'Released',
+          icon: Icons.check_circle_rounded,
+          color: const Color(0xFF388E3C),
+          isNew: true),
+    ]);
+  } else if (selectedTab == 'renewal') {
+    // ── Renewal status chips (STUDENTS ONLY) ──────────────────────
+    // renewal_pending_next_sem → students who passed inspection, waiting for new bike
+    // active_renewal           → already assigned new bike
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(children: [
+        _renewalStatusChip(
+          'renewal_pending_next_sem',
+          'Pending Release (Student)',
+          Icons.school_rounded,
+          const Color(0xFF7B1FA2),
+        ),
         const SizedBox(width: 12),
-        _statusChip(
-            value: 'active',
-            label: 'Released',
-            icon: Icons.check_circle_rounded,
-            color: const Color(0xFF388E3C),
-            isNew: true),
-      ]);
-    } else if (selectedTab == 'renewal') {
-      return Row(children: [
-        _statusChip(
-            value: 'renewal_chancellor',
-            label: 'Pending Release',
-            icon: Icons.inventory_rounded,
-            color: const Color(0xFFF57C00),
-            isNew: false),
-        const SizedBox(width: 12),
-        _statusChip(
-            value: 'renewal_gso',
-            label: 'Released',
-            icon: Icons.check_circle_rounded,
-            color: const Color(0xFF388E3C),
-            isNew: false),
-        const SizedBox(width: 12),
-        _statusChip(
-            value: 'renewal_gso_rejected',
-            label: 'Rejected',
-            icon: Icons.cancel_rounded,
-            color: const Color(0xFFD32F2F),
-            isNew: false),
-      ]);
+        _renewalStatusChip(
+          'active_renewal',
+          'Released',
+          Icons.check_circle_rounded,
+          const Color(0xFF388E3C),
+        ),
+      ]),
+    );
     } else if (selectedTab == 'short_term') {
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -687,8 +676,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
           _shortTermStatusChip('active', 'Active',
               Icons.directions_bike_rounded, const Color(0xFF1565C0)),
           const SizedBox(width: 12),
-          _shortTermStatusChip('completed', 'Completed',
-              Icons.task_alt_rounded, Colors.teal),
+          _shortTermStatusChip(
+              'completed', 'Completed', Icons.task_alt_rounded, Colors.teal),
           const SizedBox(width: 12),
           _shortTermStatusChip('overdue', 'Overdue',
               Icons.warning_amber_rounded, Colors.deepOrange),
@@ -701,23 +690,22 @@ class _ForReleasePageState extends State<ForReleasePage> {
     return const SizedBox.shrink();
   }
 
-  Widget _shortTermStatusChip(
+  Widget _renewalStatusChip(
       String value, String label, IconData icon, Color color) {
-    final isSelected = selectedShortTermStatus == value;
+    final isSelected = selectedRenewalStatus == value;
     return GestureDetector(
       onTap: () {
-        setState(() => selectedShortTermStatus = value);
-        _fetchShortTermRequests();
+        setState(() => selectedRenewalStatus = value);
+        _fetchRenewalApplications();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
           color: isSelected ? color : Colors.white,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-              color: isSelected ? color : Colors.grey[300]!, width: 1.5),
+          border:
+              Border.all(color: isSelected ? color : Colors.grey[300]!, width: 1.5),
           boxShadow: isSelected
               ? [
                   BoxShadow(
@@ -729,9 +717,47 @@ class _ForReleasePageState extends State<ForReleasePage> {
         ),
         child: Row(
           children: [
-            Icon(icon,
-                size: 16,
-                color: isSelected ? Colors.white : color),
+            Icon(icon, size: 16, color: isSelected ? Colors.white : color),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isSelected ? Colors.white : color)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _shortTermStatusChip(
+      String value, String label, IconData icon, Color color) {
+    final isSelected = selectedShortTermStatus == value;
+    return GestureDetector(
+      onTap: () {
+        setState(() => selectedShortTermStatus = value);
+        _fetchShortTermRequests();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? color : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border:
+              Border.all(color: isSelected ? color : Colors.grey[300]!, width: 1.5),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: color.withOpacity(0.3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4))
+                ]
+              : [],
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: isSelected ? Colors.white : color),
             const SizedBox(width: 6),
             Text(label,
                 style: TextStyle(
@@ -751,26 +777,20 @@ class _ForReleasePageState extends State<ForReleasePage> {
     required Color color,
     required bool isNew,
   }) {
-    final isSelected =
-        isNew ? selectedNewStatus == value : selectedRenewalStatus == value;
+    final isSelected = selectedNewStatus == value;
     return GestureDetector(
       onTap: () {
-        setState(() {
-          if (isNew) selectedNewStatus = value;
-          else selectedRenewalStatus = value;
-        });
-        if (isNew) _fetchNewApplications();
-        else _fetchRenewalApplications();
+        setState(() => selectedNewStatus = value);
+        _fetchNewApplications();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected ? color : Colors.white,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-              color: isSelected ? color : Colors.grey[300]!, width: 1.5),
+          border:
+              Border.all(color: isSelected ? color : Colors.grey[300]!, width: 1.5),
           boxShadow: isSelected
               ? [
                   BoxShadow(
@@ -782,9 +802,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
         ),
         child: Row(
           children: [
-            Icon(icon,
-                size: 18,
-                color: isSelected ? Colors.white : color),
+            Icon(icon, size: 18, color: isSelected ? Colors.white : color),
             const SizedBox(width: 8),
             Text(label,
                 style: TextStyle(
@@ -797,6 +815,10 @@ class _ForReleasePageState extends State<ForReleasePage> {
     );
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // LIST BUILDERS
+  // ════════════════════════════════════════════════════════════════
+
   Widget _buildNewApplicationsList() {
     if (newApplications.isEmpty) {
       return _emptyState(selectedNewStatus == 'for_release'
@@ -804,9 +826,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
           : 'No released applications');
     }
     return Column(
-        children: newApplications
-            .map((app) => _newApplicationCard(app))
-            .toList());
+        children: newApplications.map((app) => _newApplicationCard(app)).toList());
   }
 
   Widget _newApplicationCard(BorrowingApplicationV2Model app) {
@@ -842,9 +862,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(
-              isPending
-                  ? Icons.inventory_rounded
-                  : Icons.check_circle_rounded,
+              isPending ? Icons.inventory_rounded : Icons.check_circle_rounded,
               color: isPending
                   ? const Color(0xFFF57C00)
                   : const Color(0xFF388E3C),
@@ -867,15 +885,14 @@ class _ForReleasePageState extends State<ForReleasePage> {
                 ]),
                 const SizedBox(height: 4),
                 Text(
-                app.userType == 'student'
-                    ? 'SR Code: ${app.idNo ?? "N/A"}'
-                    : 'Employee No: ${app.idNo ?? "N/A"}',
-                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-              ),
+                  app.userType == 'student'
+                      ? 'SR Code: ${app.idNo ?? "N/A"}'
+                      : 'Employee No: ${app.idNo ?? "N/A"}',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
                 const SizedBox(height: 2),
                 Text('Control No: ${app.controlNumber ?? "Pending"}',
-                    style:
-                        TextStyle(fontSize: 13, color: Colors.grey[500])),
+                    style: TextStyle(fontSize: 13, color: Colors.grey[500])),
                 const SizedBox(height: 10),
                 _statusBadge(
                   isPending ? 'Pending Release' : 'Released',
@@ -891,8 +908,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF388E3C),
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8)),
               ),
@@ -908,38 +925,50 @@ class _ForReleasePageState extends State<ForReleasePage> {
 
   Widget _buildRenewalApplicationsList() {
     if (renewalApplications.isEmpty) {
-      return _emptyState(
-        selectedRenewalStatus == 'renewal_chancellor'
-            ? 'No pending renewal releases'
-            : selectedRenewalStatus == 'renewal_gso'
-                ? 'No released renewals'
-                : 'No rejected renewals',
-      );
+      return _emptyState(_getRenewalEmptyMessage());
     }
     return Column(
-        children: renewalApplications
-            .map((app) => _renewalApplicationCard(app))
-            .toList());
+        children:
+            renewalApplications.map((app) => _renewalApplicationCard(app)).toList());
+  }
+
+  String _getRenewalEmptyMessage() {
+    switch (selectedRenewalStatus) {
+      case 'renewal_pending_next_sem':
+        return 'No students pending next-semester release';
+      case 'active_renewal':
+        return 'No released student renewals';
+      default:
+        return 'No renewal applications';
+    }
   }
 
   Widget _renewalApplicationCard(Map<String, dynamic> app) {
     final firstName = app['first_name'] ?? '';
     final lastName = app['last_name'] ?? '';
-    final idNumber = app['id_number'] ?? 'N/A';
-    final bikeNumber = app['bike_number'] ?? 'N/A';
     final status = app['status'] ?? '';
-    final isPending = status == 'renewal_chancellor';
-    final isApproved = status == 'renewal_gso';
-    final Color statusColor = isPending
-        ? const Color(0xFFF57C00)
-        : isApproved
-            ? const Color(0xFF388E3C)
-            : const Color(0xFFD32F2F);
-    final String statusLabel = isPending
-        ? 'Pending Release'
-        : isApproved
-            ? 'Released'
-            : 'Rejected';
+
+    // After release the bike number is stored in renewal_gso_bike_number.
+    final bikeNumber = app['renewal_gso_bike_number'] ?? 'Not assigned yet';
+
+    final isPendingStudent = status == 'renewal_pending_next_sem';
+    final isReleased = status == 'active_renewal';
+
+    Color statusColor;
+    String statusLabel;
+    IconData statusIcon;
+
+    if (isPendingStudent) {
+      statusColor = const Color(0xFF7B1FA2);
+      statusLabel = 'Pending Release (Student)';
+      statusIcon = Icons.school_rounded;
+    } else {
+      statusColor = const Color(0xFF388E3C);
+      statusLabel = 'Released';
+      statusIcon = Icons.check_circle_rounded;
+    }
+
+    final canRelease = isPendingStudent;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -953,8 +982,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
               blurRadius: 16,
               offset: const Offset(0, 4))
         ],
-        border:
-            Border.all(color: statusColor.withOpacity(0.2), width: 1),
+        border: Border.all(color: statusColor.withOpacity(0.2), width: 1),
       ),
       child: Row(
         children: [
@@ -964,15 +992,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
             decoration: BoxDecoration(
                 color: statusColor.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(14)),
-            child: Icon(
-              isPending
-                  ? Icons.inventory_rounded
-                  : isApproved
-                      ? Icons.check_circle_rounded
-                      : Icons.cancel_rounded,
-              color: statusColor,
-              size: 28,
-            ),
+            child: Icon(statusIcon, color: statusColor, size: 28),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -987,38 +1007,52 @@ class _ForReleasePageState extends State<ForReleasePage> {
                           color: Color(0xFF1A1A1A))),
                   const SizedBox(width: 8),
                   _badge('Renewal', const Color(0xFF7B1FA2)),
+                  const SizedBox(width: 6),
+                  _badge('Student', const Color(0xFF1565C0)),
                 ]),
                 const SizedBox(height: 4),
-                Text('ID: $idNumber',
-                    style: TextStyle(
-                        fontSize: 13, color: Colors.grey[600])),
+                Text(
+                  'SR Code: ${app['sr_code'] ?? app['id_no'] ?? "N/A"}',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
                 const SizedBox(height: 2),
                 Row(children: [
                   Icon(Icons.pedal_bike_rounded,
                       size: 14, color: Colors.grey[500]),
                   const SizedBox(width: 4),
-                  Text('Bike No: $bikeNumber',
-                      style: TextStyle(
-                          fontSize: 13, color: Colors.grey[500])),
+                  Text('Bike: $bikeNumber',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[500])),
                 ]),
                 const SizedBox(height: 10),
                 _statusBadge(statusLabel, statusColor),
+                if (isReleased && app['renewal_gso_checked_by'] != null) ...[
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Icon(Icons.badge_rounded,
+                        size: 13, color: Colors.grey[400]),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Released by: ${app['renewal_gso_checked_by']}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    ),
+                  ]),
+                ],
               ],
             ),
           ),
-          if (isPending)
+          if (canRelease)
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF1565C0),
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8)),
               ),
-              onPressed: () => _showBikeConditionDialog(app),
-              icon: const Icon(Icons.bike_scooter_rounded, size: 18),
-              label: const Text('Check Bike & Release',
+              onPressed: () => _showRenewalReleaseDialog(app),
+              icon: const Icon(Icons.qr_code_rounded, size: 18),
+              label: const Text('Assign Bike & Release',
                   style: TextStyle(fontWeight: FontWeight.w600)),
             ),
         ],
@@ -1028,12 +1062,10 @@ class _ForReleasePageState extends State<ForReleasePage> {
 
   Widget _buildShortTermList() {
     if (shortTermRequests.isEmpty) {
-      return _emptyState(
-          'No $selectedShortTermStatus short-term requests');
+      return _emptyState('No $selectedShortTermStatus short-term requests');
     }
     return Column(
-      children:
-          shortTermRequests.map((req) => _shortTermCard(req)).toList(),
+      children: shortTermRequests.map((req) => _shortTermCard(req)).toList(),
     );
   }
 
@@ -1078,8 +1110,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
 
     String getInitials(String name) {
       final parts = name.trim().split(' ');
-      if (parts.length >= 2)
-        return parts[0][0] + parts[parts.length - 1][0];
+      if (parts.length >= 2) return parts[0][0] + parts[parts.length - 1][0];
       if (parts.isNotEmpty && parts[0].isNotEmpty) return parts[0][0];
       return 'U';
     }
@@ -1146,8 +1177,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
                   const SizedBox(height: 4),
                   Row(children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
                         color: userType == 'student'
                             ? Colors.blue[100]
@@ -1169,8 +1200,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                       userType == 'student'
                           ? 'SR: ${request['sr_code'] ?? 'N/A'}'
                           : 'Emp: ${request['employee_no'] ?? 'N/A'}',
-                      style: TextStyle(
-                          fontSize: 13, color: Colors.grey[600]),
+                      style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                     ),
                   ]),
                   const SizedBox(height: 4),
@@ -1181,8 +1211,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
                     Flexible(
                       child: Text(
                         request['destination_name'] ?? 'N/A',
-                        style: TextStyle(
-                            fontSize: 12, color: Colors.grey[600]),
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey[600]),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -1194,8 +1224,8 @@ class _ForReleasePageState extends State<ForReleasePage> {
                     const SizedBox(width: 4),
                     Text(
                       '${request['selected_duration_minutes']} minutes',
-                      style: TextStyle(
-                          fontSize: 12, color: Colors.grey[600]),
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[600]),
                     ),
                   ]),
                   const SizedBox(height: 8),
@@ -1218,8 +1248,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8)),
                     ),
-                    onPressed: () =>
-                        _showShortTermReleaseDialog(request),
+                    onPressed: () => _showShortTermReleaseDialog(request),
                     icon: const Icon(Icons.qr_code_rounded, size: 16),
                     label: const Text('Release',
                         style: TextStyle(fontWeight: FontWeight.w600)),
@@ -1233,8 +1262,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8)),
                     ),
-                    onPressed: () =>
-                        _showShortTermDeclineDialog(request),
+                    onPressed: () => _showShortTermDeclineDialog(request),
                     icon: const Icon(Icons.cancel_rounded, size: 16),
                     label: const Text('Decline',
                         style: TextStyle(fontWeight: FontWeight.w600)),
@@ -1309,7 +1337,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// BULK RELEASE SECTION
+// BULK RELEASE SECTION  (unchanged from original)
 // ═══════════════════════════════════════════════════════════════════
 class _BulkReleaseSection extends StatefulWidget {
   final String? userCampus;
@@ -1424,9 +1452,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
       await widget.supabase.storage
           .from('signatures')
           .uploadBinary(path, bytes);
-      return widget.supabase.storage
-          .from('signatures')
-          .getPublicUrl(path);
+      return widget.supabase.storage.from('signatures').getPublicUrl(path);
     } catch (e) {
       debugPrint('Upload error: $e');
       return null;
@@ -1486,8 +1512,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -1499,8 +1524,8 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(children: [
           const Icon(Icons.flag_rounded, color: Color(0xFFD32F2F)),
           const SizedBox(width: 8),
@@ -1557,8 +1582,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -1596,8 +1620,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                               color: Color(0xFFD32F2F))),
                       Text(
                         '${_eventBikes.length} bike${_eventBikes.length > 1 ? 's' : ''} currently out for event use.',
-                        style: TextStyle(
-                            fontSize: 13, color: Colors.red[800]),
+                        style: TextStyle(fontSize: 13, color: Colors.red[800]),
                       ),
                       const SizedBox(height: 8),
                       Wrap(
@@ -1613,8 +1636,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                                   decoration: BoxDecoration(
                                     color: const Color(0xFFD32F2F)
                                         .withOpacity(0.1),
-                                    borderRadius:
-                                        BorderRadius.circular(20),
+                                    borderRadius: BorderRadius.circular(20),
                                     border: Border.all(
                                         color: const Color(0xFFD32F2F)
                                             .withOpacity(0.4)),
@@ -1632,8 +1654,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                 ),
                 const SizedBox(width: 12),
                 ElevatedButton.icon(
-                  onPressed:
-                      _isEndingEvent ? null : _showEndEventDialog,
+                  onPressed: _isEndingEvent ? null : _showEndEventDialog,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFD32F2F),
                     foregroundColor: Colors.white,
@@ -1651,8 +1672,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                       : const Icon(Icons.flag_rounded, size: 18),
                   label: Text(
                     _isEndingEvent ? 'Ending...' : 'End Event',
-                    style:
-                        const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
@@ -1666,8 +1686,8 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
           decoration: BoxDecoration(
             color: const Color(0xFFE8F5E9),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-                color: const Color(0xFF388E3C).withOpacity(0.4)),
+            border:
+                Border.all(color: const Color(0xFF388E3C).withOpacity(0.4)),
           ),
           child: Row(
             children: [
@@ -1685,8 +1705,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                             color: Color(0xFF1B5E20))),
                     Text(
                       'Select available bikes, enter the event name, and provide your signature.',
-                      style: TextStyle(
-                          fontSize: 13, color: Colors.green[800]),
+                      style: TextStyle(fontSize: 13, color: Colors.green[800]),
                     ),
                   ],
                 ),
@@ -1718,9 +1737,8 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                     if (_selectAll) {
                       _selectedBikeIds = [];
                     } else {
-                      _selectedBikeIds = _availableBikes
-                          .map((b) => b['id'] as int)
-                          .toList();
+                      _selectedBikeIds =
+                          _availableBikes.map((b) => b['id'] as int).toList();
                     }
                   });
                 },
@@ -1750,16 +1768,14 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                         color: const Color(0xFFFFEBEE),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
-                            color: const Color(0xFFD32F2F)
-                                .withOpacity(0.3))),
+                            color: const Color(0xFFD32F2F).withOpacity(0.3))),
                     child: const Row(children: [
                       Icon(Icons.warning_amber_rounded,
                           color: Color(0xFFD32F2F), size: 18),
                       SizedBox(width: 8),
                       Text('No available bikes at your campus.',
                           style: TextStyle(
-                              fontSize: 13,
-                              color: Color(0xFFD32F2F))),
+                              fontSize: 13, color: Color(0xFFD32F2F))),
                     ]),
                   )
                 : Wrap(
@@ -1783,9 +1799,8 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 10),
                           decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF388E3C)
-                                : Colors.white,
+                            color:
+                                isSelected ? const Color(0xFF388E3C) : Colors.white,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
                               color: isSelected
@@ -1853,17 +1868,16 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
           controller: _eventNameController,
           decoration: InputDecoration(
             hintText: 'e.g. Campus Sports Fest 2025',
-            prefixIcon: const Icon(Icons.event_rounded,
-                color: Color(0xFF388E3C)),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8)),
+            prefixIcon:
+                const Icon(Icons.event_rounded, color: Color(0xFF388E3C)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(
-                  color: Color(0xFF388E3C), width: 1.5),
+              borderSide:
+                  const BorderSide(color: Color(0xFF388E3C), width: 1.5),
             ),
-            contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12, vertical: 12),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
           ),
         ),
 
@@ -1898,12 +1912,10 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                         ? Center(
                             child: ElevatedButton.icon(
                               onPressed: _pickImage,
-                              icon: const Icon(Icons.upload_file,
-                                  size: 20),
+                              icon: const Icon(Icons.upload_file, size: 20),
                               label: const Text('Upload Signature'),
                               style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      const Color(0xFF388E3C),
+                                  backgroundColor: const Color(0xFF388E3C),
                                   foregroundColor: Colors.white),
                             ),
                           )
@@ -1929,9 +1941,8 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
               IconButton(
                 icon:
                     Icon(_isDrawMode ? Icons.upload_file : Icons.edit),
-                tooltip: _isDrawMode
-                    ? 'Switch to Upload'
-                    : 'Switch to Draw',
+                tooltip:
+                    _isDrawMode ? 'Switch to Upload' : 'Switch to Draw',
                 onPressed: () {
                   setState(() {
                     _isDrawMode = !_isDrawMode;
@@ -1972,8 +1983,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
               _isSubmitting
                   ? 'Releasing...'
                   : 'Release ${_selectedBikeIds.isEmpty ? '' : '${_selectedBikeIds.length} '}Bike${_selectedBikeIds.length == 1 ? '' : 's'} for Event',
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
             ),
           ),
         ),
@@ -1994,6 +2004,7 @@ class _ReleaseDialog extends StatefulWidget {
   final String applicationType;
   final Map<String, dynamic>? bikeInfo;
   final String? userCampus;
+  final String? userType;
   final Map<String, dynamic>? shortTermRequest;
   final VoidCallback onApproved;
   final VoidCallback onRejected;
@@ -2005,6 +2016,7 @@ class _ReleaseDialog extends StatefulWidget {
     required this.applicationType,
     required this.bikeInfo,
     required this.userCampus,
+    this.userType,
     this.shortTermRequest,
     required this.onApproved,
     required this.onRejected,
@@ -2031,6 +2043,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   Map<String, dynamic>? _selectedBike;
   bool _loadingBikes = false;
 
+  // Bike condition checklist (shown for renewals)
   bool _frameOk = true;
   bool _wheelsOk = true;
   bool _brakesOk = true;
@@ -2047,23 +2060,24 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   bool _hasSignature = false;
   Uint8List? _uploadedImageBytes;
   String? _uploadedFileName;
-  final TextEditingController _officerNameController =
-      TextEditingController();
+  final TextEditingController _officerNameController = TextEditingController();
 
   bool get _isRenewal => widget.applicationType == 'renewal';
   bool get _isShortTerm => widget.applicationType == 'short_term';
 
+  // ── QR payload ───────────────────────────────────────────────────
   String get _qrData => _isShortTerm
       ? 'SHORT-${widget.applicationId}'
       : '${_isRenewal ? 'RENEWAL' : 'NEW'}-${widget.applicationId}';
 
+  // ── DB table ─────────────────────────────────────────────────────
   String get _tableName => _isRenewal
-      ? 'renewal_applications'
+      ? 'borrowing_applications_version2'
       : _isShortTerm
           ? 'short_term_borrowing_requests'
           : 'borrowing_applications_version2';
 
-  // ← FIXED: polling waits for 'active' (set by app after QR scan)
+  // ── Status we poll for (set by mobile app after QR scan) ─────────
   String get _releasedStatus => _isShortTerm
       ? 'active'
       : _isRenewal
@@ -2071,17 +2085,12 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           : 'active';
 
   bool get _allConditionsOk =>
-      _frameOk &&
-      _wheelsOk &&
-      _brakesOk &&
-      _chaingearOk &&
-      _saddleOk &&
-      _lightsOk;
+      _frameOk && _wheelsOk && _brakesOk && _chaingearOk && _saddleOk && _lightsOk;
 
   bool get _canGenerateQr =>
       _hasSignature &&
       _officerNameController.text.trim().isNotEmpty &&
-      (_isRenewal || _selectedBike != null);
+      _selectedBike != null; // required for both new + renewal
 
   Color get _accentColor => _isShortTerm
       ? const Color(0xFFF57C00)
@@ -2109,8 +2118,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     )..repeat(reverse: true);
 
     _pulseAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
-        CurvedAnimation(
-            parent: _pulseController, curve: Curves.easeInOut));
+        CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut));
   }
 
   @override
@@ -2123,8 +2131,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     super.dispose();
   }
 
+  // Bikes needed for all types (new, renewal, short-term)
   Future<void> _loadAvailableBikes() async {
-    if (_isRenewal) return;
     setState(() => _loadingBikes = true);
     try {
       final response = await supabase
@@ -2179,8 +2187,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     }
   }
 
-  Future<String?> _uploadSignature(
-      Uint8List bytes, String fileName) async {
+  Future<String?> _uploadSignature(Uint8List bytes, String fileName) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final userId = supabase.auth.currentUser?.id ?? 'unknown';
@@ -2193,6 +2200,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     }
   }
 
+  // ── Main action: save GSO data + show QR ─────────────────────────
   Future<void> _generateQr() async {
     if (!_canGenerateQr) return;
     setState(() => _isSubmitting = true);
@@ -2216,36 +2224,43 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       final currentUserId = supabase.auth.currentUser?.id;
 
       if (_isShortTerm) {
-        // ── SHORT TERM ────────────────────────────────────────
-        // Save GSO details + bike assignment + set to approved
-        // Wala pang bike status update or session insert
-        // App na bahala sa lahat after QR scan + face recog
-        await supabase
-            .from('short_term_borrowing_requests')
-            .update({
-              'gso_officer_name': _officerNameController.text.trim(),
-              'gso_signature_url': signatureUrl,
-              'reviewed_by': currentUserId,
-              'reviewed_at': now,
-              'updated_at': now,
-              'assigned_bike_id': _selectedBike!['id'],
-              'assigned_bike_number': _selectedBike!['bike_number'],
-              'status': 'approved',
-            })
-            .eq('id', int.parse(widget.applicationId));
-
-        // ← NO bike update here
-        // ← NO session insert here
-        // App will: update bike to in_use, insert session, set status to active
-      } else if (_isRenewal) {
-        // ── RENEWAL ───────────────────────────────────────────
-        await supabase.from('renewal_applications').update({
+        // ── SHORT TERM ────────────────────────────────────────────
+        // Save GSO details + bike assignment + set status to 'approved'.
+        // Mobile app handles: bike → in_use, session insert, status → active.
+        await supabase.from('short_term_borrowing_requests').update({
           'gso_officer_name': _officerNameController.text.trim(),
           'gso_signature_url': signatureUrl,
-          'gso_date_signed': now,
+          'reviewed_by': currentUserId,
+          'reviewed_at': now,
+          'updated_at': now,
+          'assigned_bike_id': _selectedBike!['id'],
+          'assigned_bike_number': _selectedBike!['bike_number'],
+          'status': 'approved',
+        }).eq('id', int.parse(widget.applicationId));
+
+      } else if (_isRenewal) {
+        // ── RENEWAL ───────────────────────────────────────────────
+        // Write to the four renewal_gso_* columns.
+        // Status stays as-is here; the mobile app sets it to 'active_renewal'
+        // after the borrower scans the QR and completes face verification.
+        await supabase.from('borrowing_applications_version2').update({
+          'renewal_gso_bike_id': _selectedBike!['id'],
+          'renewal_gso_bike_number': _selectedBike!['bike_number'],
+          'renewal_gso_checked_by': _officerNameController.text.trim(),
+          'renewal_gso_signature_url': signatureUrl,
+          // Keep the bike in available status until the borrower confirms
+          // via QR scan — the app will flip it to in_use.
+          'updated_at': now,
         }).eq('id', widget.applicationId);
+
+        // Mark the bike as reserved so it's not double-assigned.
+        await supabase.from('bikes').update({
+          'status': 'reserved',
+          'current_user_id': null,
+        }).eq('id', _selectedBike!['id']);
+
       } else {
-        // ── NEW APPLICATION ───────────────────────────────────
+        // ── NEW APPLICATION ───────────────────────────────────────
         final application = await supabase
             .from('borrowing_applications_version2')
             .select('user_id')
@@ -2285,43 +2300,36 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   }
 
   void _startRealtimeListener() {
-  final channelName =
-      'release_${widget.applicationType}_${widget.applicationId}_${DateTime.now().millisecondsSinceEpoch}';
-  
-  _channel = supabase.channel(channelName,
-    opts: const RealtimeChannelConfig(ack: true),
-  );
-  
-  _channel!
-      .onPostgresChanges(
-        event: PostgresChangeEvent.update,
-        schema: 'public',
-        table: _tableName,
-        callback: (payload) {
-          debugPrint('Realtime payload received: ${payload.newRecord}');
-          final newStatus = payload.newRecord['status'];
-          final recordId = payload.newRecord['id'].toString();
-          if (recordId == widget.applicationId &&
-              newStatus == _releasedStatus &&
-              !_isReleased &&
-              mounted) {
-            _onReleaseDetected();
-          }
-        },
-      )
-      .subscribe((status, [error]) {
-        debugPrint('Realtime status: $status, error: $error');
-        // If closed unexpectedly, retry after 2 seconds
-        if (status == RealtimeSubscribeStatus.closed && !_isReleased) {
-          debugPrint('Channel closed unexpectedly, retrying...');
-          Future.delayed(const Duration(seconds: 2), () {
-            if (mounted && !_isReleased) {
-              _startRealtimeListener();
+    final channelName =
+        'release_${widget.applicationType}_${widget.applicationId}_${DateTime.now().millisecondsSinceEpoch}';
+    _channel = supabase.channel(channelName,
+        opts: const RealtimeChannelConfig(ack: true));
+    _channel!
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: _tableName,
+          callback: (payload) {
+            debugPrint('Realtime payload: ${payload.newRecord}');
+            final newStatus = payload.newRecord['status'];
+            final recordId = payload.newRecord['id'].toString();
+            if (recordId == widget.applicationId &&
+                newStatus == _releasedStatus &&
+                !_isReleased &&
+                mounted) {
+              _onReleaseDetected();
             }
-          });
-        }
-      });
-}
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('Realtime status: $status, error: $error');
+          if (status == RealtimeSubscribeStatus.closed && !_isReleased) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted && !_isReleased) _startRealtimeListener();
+            });
+          }
+        });
+  }
 
   void _startPollingFallback() {
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
@@ -2337,9 +2345,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 ? int.parse(widget.applicationId)
                 : widget.applicationId)
             .maybeSingle();
-        if (row != null &&
-            row['status'] == _releasedStatus &&
-            mounted) {
+        if (row != null && row['status'] == _releasedStatus && mounted) {
           _onReleaseDetected();
         }
       } catch (e) {
@@ -2364,18 +2370,25 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       applicantName: widget.applicantName,
       onReject: (reason) async {
         try {
-          final rejectedStatus =
-              _isRenewal ? 'renewal_gso_rejected' : 'rejected';
+          final rejectedStatus = _isRenewal ? 'renewal_gso_rejected' : 'rejected';
+
           await supabase.from(_tableName).update({
             'status': rejectedStatus,
             'rejection_reason': reason,
           }).eq('id', widget.applicationId);
 
+          // If we already reserved the bike for a renewal, release it.
+          if (_isRenewal && _selectedBike != null) {
+            await supabase
+                .from('bikes')
+                .update({'status': 'available'}).eq('id', _selectedBike!['id']);
+          }
+
+          // For new applications revert bike to available.
           if (!_isRenewal && _selectedBike != null) {
             await supabase
                 .from('bikes')
-                .update({'status': 'available'})
-                .eq('id', _selectedBike!['id']);
+                .update({'status': 'available'}).eq('id', _selectedBike!['id']);
           }
 
           if (mounted) {
@@ -2392,14 +2405,17 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     );
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // BUILD
+  // ════════════════════════════════════════════════════════════════
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Container(
         width: 600,
-        constraints: const BoxConstraints(maxHeight: 750),
+        constraints: const BoxConstraints(maxHeight: 780),
         padding: const EdgeInsets.all(28),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2435,7 +2451,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 : _isShortTerm
                     ? Icons.access_time_rounded
                     : _isRenewal
-                        ? Icons.pedal_bike_rounded
+                        ? Icons.autorenew_rounded
                         : Icons.inventory_rounded,
             color: Colors.white,
             size: 22,
@@ -2452,7 +2468,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                     : _isShortTerm
                         ? 'Short Term Release'
                         : _isRenewal
-                            ? 'Bike Condition Check'
+                            ? 'Renewal Bike Assignment'
                             : 'GSO Release',
                 style: const TextStyle(
                     fontSize: 20,
@@ -2463,15 +2479,13 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 _showingQr
                     ? 'Ask borrower to scan QR with the PedalHub app'
                     : widget.applicantName,
-                style:
-                    TextStyle(fontSize: 13, color: Colors.grey[600]),
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
               ),
             ],
           ),
         ),
         Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
             color: _accentColor.withOpacity(0.1),
             borderRadius: BorderRadius.circular(8),
@@ -2487,7 +2501,6 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           ),
         ),
         const SizedBox(width: 8),
-        // Always visible close button
         IconButton(
           icon: const Icon(Icons.close_rounded),
           onPressed: () => Navigator.pop(context),
@@ -2501,6 +2514,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Short-term request summary ───────────────────────────
           if (_isShortTerm && widget.shortTermRequest != null) ...[
             Container(
               padding: const EdgeInsets.all(14),
@@ -2524,152 +2538,153 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                             fontSize: 13)),
                   ]),
                   const SizedBox(height: 8),
-                  _infoChip(
-                      Icons.location_on_rounded,
-                      widget.shortTermRequest![
-                              'destination_name'] ??
-                          'N/A'),
+                  _infoChip(Icons.location_on_rounded,
+                      widget.shortTermRequest!['destination_name'] ?? 'N/A'),
                   const SizedBox(height: 4),
-                  _infoChip(
-                      Icons.timer_rounded,
+                  _infoChip(Icons.timer_rounded,
                       '${widget.shortTermRequest!['selected_duration_minutes']} minutes'),
                   const SizedBox(height: 4),
-                  _infoChip(
-                      Icons.notes_rounded,
-                      widget.shortTermRequest![
-                              'borrowing_description'] ??
-                          'N/A'),
+                  _infoChip(Icons.notes_rounded,
+                      widget.shortTermRequest!['borrowing_description'] ?? 'N/A'),
                 ],
               ),
             ),
             const SizedBox(height: 20),
           ],
 
+          // ── Renewal: condition checklist ─────────────────────────
           if (_isRenewal) ...[
-            _buildBikeInfoCard(),
-            const SizedBox(height: 24),
-            const Text('Bike Condition Checklist',
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF3E5F5),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFF7B1FA2).withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.autorenew_rounded,
+                        color: Color(0xFF7B1FA2), size: 16),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Assigning new bike for next semester',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF7B1FA2),
+                          fontSize: 13),
+                    ),
+                  ]),
+                  const SizedBox(height: 6),
+                  Text(
+                    'This student has already passed bike inspection. Select a new bike below, provide your name and signature, then generate the QR for the student to scan.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            const Text('New Bike Condition Check (Optional)',
                 style: TextStyle(
-                    fontSize: 15,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF1A1A1A))),
             const SizedBox(height: 4),
-            Text('Check each component before approving:',
-                style:
-                    TextStyle(fontSize: 13, color: Colors.grey[600])),
-            const SizedBox(height: 14),
-            _conditionCheck(
-                'Frame & Body',
-                'No visible damage or cracks',
-                _frameOk,
-                (v) => setState(() => _frameOk = v!)),
-            _conditionCheck(
-                'Wheels & Tires',
-                'Properly inflated, no flat tires',
-                _wheelsOk,
-                (v) => setState(() => _wheelsOk = v!)),
-            _conditionCheck(
-                'Brakes',
-                'Front and rear brakes functioning',
-                _brakesOk,
-                (v) => setState(() => _brakesOk = v!)),
-            _conditionCheck(
-                'Chain & Gears',
-                'Chain lubricated, gears shifting properly',
-                _chaingearOk,
-                (v) => setState(() => _chaingearOk = v!)),
-            _conditionCheck(
-                'Saddle & Handlebars',
-                'Properly adjusted and secured',
-                _saddleOk,
-                (v) => setState(() => _saddleOk = v!)),
-            _conditionCheck(
-                'Lights & Reflectors',
-                'Front light and reflectors present',
-                _lightsOk,
-                (v) => setState(() => _lightsOk = v!)),
+            Text('Verify the new bike before assigning:',
+                style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+            const SizedBox(height: 12),
+            _conditionCheck('Frame & Body', 'No visible damage or cracks',
+                _frameOk, (v) => setState(() => _frameOk = v!)),
+            _conditionCheck('Wheels & Tires', 'Properly inflated, no flat tires',
+                _wheelsOk, (v) => setState(() => _wheelsOk = v!)),
+            _conditionCheck('Brakes', 'Front and rear brakes functioning',
+                _brakesOk, (v) => setState(() => _brakesOk = v!)),
+            _conditionCheck('Chain & Gears', 'Chain lubricated, gears shifting',
+                _chaingearOk, (v) => setState(() => _chaingearOk = v!)),
+            _conditionCheck('Saddle & Handlebars', 'Secured and adjusted',
+                _saddleOk, (v) => setState(() => _saddleOk = v!)),
+            _conditionCheck('Lights & Reflectors', 'Present and working',
+                _lightsOk, (v) => setState(() => _lightsOk = v!)),
             if (!_allConditionsOk) ...[
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                     color: const Color(0xFFFFEBEE),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                        color: const Color(0xFFD32F2F)
-                            .withOpacity(0.3))),
+                        color: const Color(0xFFD32F2F).withOpacity(0.3))),
                 child: const Row(children: [
                   Icon(Icons.warning_amber_rounded,
                       color: Color(0xFFD32F2F), size: 18),
                   SizedBox(width: 8),
                   Expanded(
                       child: Text(
-                          'One or more components are in poor condition. Consider rejecting.',
+                          'One or more components may need attention. Consider choosing a different bike.',
                           style: TextStyle(
-                              fontSize: 13,
-                              color: Color(0xFFD32F2F)))),
+                              fontSize: 13, color: Color(0xFFD32F2F)))),
                 ]),
               ),
             ],
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
             const Divider(),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
           ],
 
-          if (!_isRenewal) ...[
-            const Text('Assign Bike *',
-                style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF1A1A1A))),
-            const SizedBox(height: 8),
-            _loadingBikes
-                ? const Center(child: CircularProgressIndicator())
-                : _availableBikes.isEmpty
-                    ? Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                            color: const Color(0xFFFFEBEE),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                                color: const Color(0xFFD32F2F)
-                                    .withOpacity(0.3))),
-                        child: const Row(children: [
-                          Icon(Icons.warning_amber_rounded,
-                              color: Color(0xFFD32F2F), size: 18),
-                          SizedBox(width: 8),
-                          Text('No available bikes at the moment.',
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  color: Color(0xFFD32F2F))),
-                        ]),
-                      )
-                    : DropdownButtonFormField<Map<String, dynamic>>(
-                        value: _selectedBike,
-                        decoration: InputDecoration(
-                          prefixIcon:
-                              const Icon(Icons.pedal_bike_rounded),
-                          hintText: 'Select a bike to assign',
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8)),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 12),
-                        ),
-                        items: _availableBikes.map<DropdownMenuItem<Map<String, dynamic>>>((bike) {
-                          return DropdownMenuItem<Map<String, dynamic>>(
-                            value: bike,
-                            child: Text(
-                              'Bike #${bike['bike_number']} — ${bike['campus'] ?? 'N/A'}',
-                              style: const TextStyle(fontSize: 14),
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: (val) =>
-                            setState(() => _selectedBike = val),
+          // ── Bike selector (all types) ────────────────────────────
+          const Text('Assign Bike *',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A1A))),
+          const SizedBox(height: 8),
+          _loadingBikes
+              ? const Center(child: CircularProgressIndicator())
+              : _availableBikes.isEmpty
+                  ? Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                          color: const Color(0xFFFFEBEE),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: const Color(0xFFD32F2F).withOpacity(0.3))),
+                      child: const Row(children: [
+                        Icon(Icons.warning_amber_rounded,
+                            color: Color(0xFFD32F2F), size: 18),
+                        SizedBox(width: 8),
+                        Text('No available bikes at the moment.',
+                            style: TextStyle(
+                                fontSize: 13, color: Color(0xFFD32F2F))),
+                      ]),
+                    )
+                  : DropdownButtonFormField<Map<String, dynamic>>(
+                      value: _selectedBike,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.pedal_bike_rounded),
+                        hintText: 'Select a bike to assign',
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 12),
                       ),
-            const SizedBox(height: 20),
-          ],
+                      items: _availableBikes
+                          .map<DropdownMenuItem<Map<String, dynamic>>>((bike) {
+                        return DropdownMenuItem<Map<String, dynamic>>(
+                          value: bike,
+                          child: Text(
+                            'Bike #${bike['bike_number']} — ${bike['campus'] ?? 'N/A'}',
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) => setState(() => _selectedBike = val),
+                    ),
+          const SizedBox(height: 20),
 
+          // ── GSO officer name ─────────────────────────────────────
           const Text('GSO Officer Name *',
               style: TextStyle(
                   fontSize: 15,
@@ -2681,14 +2696,14 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             decoration: InputDecoration(
               hintText: 'Enter officer full name',
               prefixIcon: const Icon(Icons.badge_rounded),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8)),
-              contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 12),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             ),
           ),
           const SizedBox(height: 20),
 
+          // ── Signature ────────────────────────────────────────────
           const Text('GSO Signature *',
               style: TextStyle(
                   fontSize: 15,
@@ -2696,8 +2711,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   color: Color(0xFF1A1A1A))),
           const SizedBox(height: 4),
           Text('Draw or upload your signature:',
-              style:
-                  TextStyle(fontSize: 13, color: Colors.grey[600])),
+              style: TextStyle(fontSize: 13, color: Colors.grey[600])),
           const SizedBox(height: 14),
 
           Row(
@@ -2719,10 +2733,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                           ? Center(
                               child: ElevatedButton.icon(
                                 onPressed: _pickImage,
-                                icon: const Icon(Icons.upload_file,
-                                    size: 20),
-                                label:
-                                    const Text('Upload Signature'),
+                                icon: const Icon(Icons.upload_file, size: 20),
+                                label: const Text('Upload Signature'),
                                 style: ElevatedButton.styleFrom(
                                     backgroundColor: _accentColor,
                                     foregroundColor: Colors.white),
@@ -2748,11 +2760,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   },
                 ),
                 IconButton(
-                  icon: Icon(
-                      _isDrawMode ? Icons.upload_file : Icons.edit),
-                  tooltip: _isDrawMode
-                      ? 'Switch to Upload'
-                      : 'Switch to Draw',
+                  icon: Icon(_isDrawMode ? Icons.upload_file : Icons.edit),
+                  tooltip: _isDrawMode ? 'Switch to Upload' : 'Switch to Draw',
                   onPressed: () {
                     setState(() {
                       _isDrawMode = !_isDrawMode;
@@ -2783,63 +2792,10 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
         const SizedBox(width: 6),
         Flexible(
           child: Text(text,
-              style:
-                  TextStyle(fontSize: 12, color: Colors.grey[700]),
+              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
               overflow: TextOverflow.ellipsis),
         ),
       ],
-    );
-  }
-
-  Widget _buildBikeInfoCard() {
-    final bike = widget.bikeInfo;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-          color: const Color(0xFFE3F2FD),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-              color: const Color(0xFF1565C0).withOpacity(0.3))),
-      child: bike == null
-          ? Row(children: [
-              Icon(Icons.warning_amber_rounded,
-                  color: Colors.orange[700]),
-              const SizedBox(width: 12),
-              const Expanded(
-                  child: Text(
-                      'No bike linked to this session. Please verify manually.',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w500))),
-            ])
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  const Icon(Icons.pedal_bike_rounded,
-                      color: Color(0xFF1565C0), size: 20),
-                  const SizedBox(width: 8),
-                  Text('Bike #${bike['bike_number'] ?? 'N/A'}',
-                      style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1565C0))),
-                  const SizedBox(width: 12),
-                  _bikeBadge(bike['status'] ?? 'N/A'),
-                ]),
-                const SizedBox(height: 8),
-                Row(children: [
-                  _bikeInfoChip(Icons.location_on_rounded,
-                      bike['campus'] ?? 'N/A'),
-                  const SizedBox(width: 12),
-                  _bikeInfoChip(
-                      Icons.route_rounded,
-                      '${bike['total_distance_km']?.toStringAsFixed(1) ?? '0'} km'),
-                  const SizedBox(width: 12),
-                  _bikeInfoChip(Icons.directions_bike_rounded,
-                      '${bike['total_rides'] ?? 0} rides'),
-                ]),
-              ],
-            ),
     );
   }
 
@@ -2857,7 +2813,9 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                     icon: Icons.check_circle_rounded,
                     message: _isShortTerm
                         ? 'Borrower scanned QR & completed face verification! Bike is now active.'
-                        : 'Borrower completed all steps! Application is now released.',
+                        : _isRenewal
+                            ? 'Borrower scanned QR! Renewal is now active.'
+                            : 'Borrower completed all steps! Application is now active.',
                   )
                 : _statusBanner(
                     key: const ValueKey('waiting'),
@@ -2866,14 +2824,38 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                     icon: null,
                     message: _isShortTerm
                         ? 'Waiting for borrower to scan QR & complete face verification…'
-                        : 'Waiting for borrower to complete Steps 1–3 on the PedalHub app…',
+                        : 'Waiting for borrower to scan QR on the PedalHub app…',
                   ),
           ),
           const SizedBox(height: 28),
+
+          // Assigned bike info banner
+          if (_selectedBike != null) ...[
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: _accentColor.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _accentColor.withOpacity(0.3)),
+              ),
+              child: Row(children: [
+                Icon(Icons.pedal_bike_rounded, color: _accentColor, size: 18),
+                const SizedBox(width: 10),
+                Text(
+                  'Assigned: Bike #${_selectedBike!['bike_number']}',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _accentColor),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 16),
+          ],
+
           Text(
-            _isReleased
-                ? '✅  All steps completed!'
-                : 'Ask the borrower to scan this QR',
+            _isReleased ? '✅  All steps completed!' : 'Ask the borrower to scan this QR',
             textAlign: TextAlign.center,
             style: TextStyle(
                 fontSize: 13,
@@ -2899,8 +2881,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                       width: _isReleased ? 3 : 2),
                   boxShadow: [
                     BoxShadow(
-                      color: glowColor.withOpacity(0.2 *
-                          (_isReleased ? 1 : _pulseAnimation.value)),
+                      color: glowColor.withOpacity(
+                          0.2 * (_isReleased ? 1 : _pulseAnimation.value)),
                       blurRadius: 24,
                       spreadRadius: 2,
                     ),
@@ -2915,8 +2897,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                       size: 200,
                       backgroundColor: Colors.white,
                       eyeStyle: QrEyeStyle(
-                          eyeShape: QrEyeShape.square,
-                          color: _accentColor),
+                          eyeShape: QrEyeShape.square, color: _accentColor),
                       dataModuleStyle: const QrDataModuleStyle(
                           dataModuleShape: QrDataModuleShape.square,
                           color: Color(0xFF1A1A1A)),
@@ -2940,13 +2921,13 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           ),
           const SizedBox(height: 16),
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
                 color: _accentColor.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: _accentColor.withOpacity(0.3))),
+                border:
+                    Border.all(color: _accentColor.withOpacity(0.3))),
             child: Text(
               _qrData,
               style: TextStyle(
@@ -2978,14 +2959,15 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   if (_isShortTerm) ...[
                     _stepRow('1', 'Scan QR code'),
                     _stepRow('2', 'Face verification'),
-                    _stepRow('3',
-                        'Confirm → bike activated, status = active'),
+                    _stepRow('3', 'Confirm → bike activated, status = active'),
+                  ] else if (_isRenewal) ...[
+                    _stepRow('1', 'Scan QR code'),
+                    _stepRow('2', 'Face verification'),
+                    _stepRow('3', 'Confirm → status = active_renewal'),
                   ] else ...[
-                    _stepRow('1',
-                        'Signature pad — "Received by" + agreement'),
-                    _stepRow('2', 'Face verification (semestral)'),
-                    _stepRow('3',
-                        'Agreement checkbox + confirm → updates status'),
+                    _stepRow('1', 'Signature pad — "Received by" + agreement'),
+                    _stepRow('2', 'Face verification'),
+                    _stepRow('3', 'Agreement checkbox + confirm → status = active'),
                   ],
                 ],
               ),
@@ -3005,8 +2987,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     return Container(
       key: key,
       width: double.infinity,
-      padding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
           color: bgColor,
           borderRadius: BorderRadius.circular(10),
@@ -3019,15 +3000,12 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 height: 18,
                 child: CircularProgressIndicator(
                     strokeWidth: 2.5,
-                    valueColor:
-                        AlwaysStoppedAnimation<Color>(color))),
+                    valueColor: AlwaysStoppedAnimation<Color>(color))),
         const SizedBox(width: 12),
         Expanded(
           child: Text(message,
               style: TextStyle(
-                  fontSize: 12,
-                  color: color,
-                  fontWeight: FontWeight.w600)),
+                  fontSize: 12, color: color, fontWeight: FontWeight.w600)),
         ),
       ]),
     );
@@ -3055,8 +3033,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           const SizedBox(width: 10),
           Expanded(
             child: Text(label,
-                style: TextStyle(
-                    fontSize: 12, color: Colors.grey[700])),
+                style: TextStyle(fontSize: 12, color: Colors.grey[700])),
           ),
         ],
       ),
@@ -3072,8 +3049,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF388E3C),
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 14),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10))),
             onPressed: () => Navigator.pop(context),
@@ -3090,8 +3067,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text('QR is active — waiting for borrower…',
-              style:
-                  TextStyle(fontSize: 12, color: Colors.grey[500])),
+              style: TextStyle(fontSize: 12, color: Colors.grey[500])),
           if (!_isShortTerm)
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
@@ -3115,8 +3091,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       children: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text('Cancel',
-              style: TextStyle(color: Colors.grey[600])),
+          child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
         ),
         const SizedBox(width: 8),
         if (!_isShortTerm) ...[
@@ -3141,8 +3116,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 _canGenerateQr ? _accentColor : Colors.grey[300],
             foregroundColor:
                 _canGenerateQr ? Colors.white : Colors.grey[500],
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8)),
             elevation: _canGenerateQr ? 2 : 0,
@@ -3169,12 +3144,9 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       void Function(bool?) onChanged) {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: value
-            ? const Color(0xFFE8F5E9)
-            : const Color(0xFFFFEBEE),
+        color: value ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
             color: value
@@ -3187,8 +3159,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             value: value,
             onChanged: onChanged,
             activeColor: const Color(0xFF388E3C),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(4)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -3203,15 +3174,12 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                             ? const Color(0xFF388E3C)
                             : const Color(0xFFD32F2F))),
                 Text(description,
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.grey[600])),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
               ],
             ),
           ),
           Icon(
-            value
-                ? Icons.check_circle_rounded
-                : Icons.cancel_rounded,
+            value ? Icons.check_circle_rounded : Icons.cancel_rounded,
             color: value
                 ? const Color(0xFF388E3C)
                 : const Color(0xFFD32F2F),
@@ -3219,42 +3187,6 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           ),
         ],
       ),
-    );
-  }
-
-  Widget _bikeBadge(String status) {
-    final color = status == 'in_use'
-        ? const Color(0xFF1565C0)
-        : status == 'available'
-            ? const Color(0xFF388E3C)
-            : status == 'maintenance'
-                ? const Color(0xFFD32F2F)
-                : Colors.grey;
-    return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color)),
-      child: Text(status.replaceAll('_', ' ').toUpperCase(),
-          style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: color)),
-    );
-  }
-
-  Widget _bikeInfoChip(IconData icon, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 14, color: Colors.grey[600]),
-        const SizedBox(width: 4),
-        Text(label,
-            style:
-                TextStyle(fontSize: 12, color: Colors.grey[700])),
-      ],
     );
   }
 }

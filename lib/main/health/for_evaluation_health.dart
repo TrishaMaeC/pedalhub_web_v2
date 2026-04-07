@@ -134,12 +134,15 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
   // ─────────────────────────────────────────────
   // GET APPOINTMENT DATE-TIME (LOCAL, NOT UTC)
   // ─────────────────────────────────────────────
-  Future<DateTime?> getAppointmentDateTime(int applicationId) async {
-    final response = await supabase
-        .from('medical_appointments_version2')
-        .select('appointment_date, appointment_time')
-        .eq('application_id', applicationId)
-        .maybeSingle();
+ Future<DateTime?> getAppointmentDateTime(int applicationId) async {
+  final response = await supabase
+      .from('medical_appointments_version2')
+      .select('appointment_date, appointment_time')
+      .eq('application_id', applicationId)
+      .order('appointment_date', ascending: false) // ← get latest
+      .order('appointment_time', ascending: false)
+      .limit(1)
+      .maybeSingle(); // ← now safe, only 1 row returned
 
     if (response == null) return null;
 
@@ -766,7 +769,10 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
               .select(
                   '*, medical_appointments_version2!left(appointment_date, appointment_time, status)')
               .eq('status', 'medical_scheduled')
-              .ilike('campus', userCampus!);
+              .ilike('campus', userCampus!)
+              .order('appointment_date',
+                  referencedTable: 'medical_appointments_version2',
+                  ascending: false);
           for (var app in newApps) app['_isRenewal'] = false;
         }
 
@@ -776,9 +782,12 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
               .select(
                   '*, medical_appointments_version2!left(appointment_date, appointment_time, status)')
               .eq('status', 'renewal_medical_scheduled')
-              .ilike('campus', userCampus!);
+              .ilike('campus', userCampus!)
+              .order('appointment_date',
+                  referencedTable: 'medical_appointments_version2',
+                  ascending: false);
           for (var app in renewalApps) app['_isRenewal'] = true;
-
+          
           // Walk-in re-exams (approved reassessment) — no appointment required.
           // Include them regardless of date filter.
           walkInApps = await supabase

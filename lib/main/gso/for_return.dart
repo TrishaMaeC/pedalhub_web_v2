@@ -7,6 +7,7 @@ import 'package:pedalhub_admin/widgets/app_header.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:typed_data';
+import 'package:signature/signature.dart';
 
 class ForReturnPage extends StatefulWidget {
   const ForReturnPage({super.key});
@@ -23,6 +24,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
   String selectedNewStatus = 'active';
   String selectedRenewalStatus = 'renewal_medical_approved';
   String selectedShortTermStatus = 'active';
+  String selectedRenewalUserType = 'student'; // 'student' or 'personnel'
 
   List<Map<String, dynamic>> newActiveBorrows = [];
   List<Map<String, dynamic>> renewalActiveBorrows = [];
@@ -94,7 +96,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
     if (userCampus == null) return;
     try {
       final appsResponse = await supabase
-          .from('borrowing_applications')
+          .from('borrowing_applications_version2')
           .select('*')
           .eq('status', selectedNewStatus)
           .ilike('campus', userCampus!)
@@ -135,6 +137,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
             selectedRenewalStatus,
             'renewal_bike_damage_reported',
           ])
+          .eq('user_type', selectedRenewalUserType)
           .ilike('campus', userCampus!)
           .order('created_at', ascending: false);
 
@@ -156,6 +159,13 @@ class _ForReturnPageState extends State<ForReturnPage> {
                 .from('bikes')
                 .select('*')
                 .eq('id', sessionRes['bike_id'])
+                .maybeSingle();
+          } else if (app['renewal_gso_bike_id'] != null) {
+            // For renewals, also check renewal_gso_bike_id
+            bikeInfo = await supabase
+                .from('bikes')
+                .select('*')
+                .eq('id', app['renewal_gso_bike_id'])
                 .maybeSingle();
           }
           
@@ -213,7 +223,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
         : '${app['first_name'] ?? app['firstName'] ?? ''} ${app['last_name'] ?? app['lastName'] ?? ''}'.trim();
     final bikeNumber = type == 'short_term'
         ? (app['assigned_bike_number'] ?? 'N/A')
-        : (app['bike_number'] ?? app['bikeNumber'] ?? app['assigned_bike_number'] ?? 'N/A');
+        : (app['renewal_gso_bike_number'] ?? app['assigned_bike_number'] ?? app['bike_number'] ?? app['bikeNumber'] ?? 'N/A');
     final applicationId = app['id']?.toString() ?? '';
 
     showDialog(
@@ -251,6 +261,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
       ),
     );
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -416,6 +427,47 @@ class _ForReturnPageState extends State<ForReturnPage> {
       ),
     );
   }
+  Widget _userTypeToggle(String value, String label, IconData icon) {
+  final isSelected = selectedRenewalUserType == value;
+  final color = const Color(0xFF7B1FA2);
+  return GestureDetector(
+    onTap: () {
+      setState(() {
+        selectedRenewalUserType = value;
+        // Reset to a valid status for the selected type
+        selectedRenewalStatus = 'renewal_medical_approved';
+      });
+      _fetchRenewalBorrows();
+    },
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      decoration: BoxDecoration(
+        color: isSelected ? color : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: isSelected
+            ? [BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 8,
+                offset: const Offset(0, 2))]
+            : [],
+      ),
+      child: Row(
+        children: [
+          Icon(icon,
+              size: 16,
+              color: isSelected ? Colors.white : Colors.grey[500]),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: isSelected ? Colors.white : Colors.grey[500])),
+        ],
+      ),
+    ),
+  );
+}
 
   Widget _buildStatusFilter() {
     if (selectedTab == 'new') {
@@ -435,22 +487,47 @@ class _ForReturnPageState extends State<ForReturnPage> {
             isNew: true),
       ]);
     } else if (selectedTab == 'renewal') {
-      return SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(children: [
-          _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
-              Icons.search_rounded, const Color(0xFFF57C00)),
-          const SizedBox(width: 12),
-          _renewalStatusChip('renewal_bike_damage_reported', 'Damage Reported',
-              Icons.report_problem_rounded, const Color(0xFFD32F2F)),
-          const SizedBox(width: 12),
-          _renewalStatusChip('active_renewal', 'Active Renewal',
-              Icons.pedal_bike_rounded, const Color(0xFF1565C0)),
-          const SizedBox(width: 12),
-          _renewalStatusChip('renewal_pending_next_sem', 'Pending Next Sem',
-              Icons.schedule_rounded, Colors.teal),
-        ]),
-      );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Student / Personnel toggle ──
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _userTypeToggle('student', 'Student', Icons.school_rounded),
+              _userTypeToggle('personnel', 'Personnel', Icons.badge_rounded),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        // ── Status chips ──
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(children: [
+            _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
+                Icons.search_rounded, const Color(0xFFF57C00)),
+            const SizedBox(width: 12),
+            _renewalStatusChip('renewal_bike_damage_reported', 'Damage Reported',
+                Icons.report_problem_rounded, const Color(0xFFD32F2F)),
+            const SizedBox(width: 12),
+            _renewalStatusChip('active_renewal', 'Active Renewal',
+                Icons.pedal_bike_rounded, const Color(0xFF1565C0)),
+            const SizedBox(width: 12),
+            // Only show this chip for students
+            if (selectedRenewalUserType == 'student')
+              _renewalStatusChip('renewal_pending_next_sem', 'Pending Next Sem',
+                  Icons.schedule_rounded, Colors.teal),
+          ]),
+        ),
+      ],
+    );
+
     } else if (selectedTab == 'short_term') {
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -635,11 +712,15 @@ class _ForReturnPageState extends State<ForReturnPage> {
   String _getRenewalEmptyMessage() {
     switch (selectedRenewalStatus) {
       case 'renewal_medical_approved':
-        return 'No renewals pending bike inspection';
+        return selectedRenewalUserType == 'student'
+            ? 'No students pending bike inspection'
+            : 'No personnel pending bike inspection';
       case 'renewal_bike_damage_reported':
         return 'No damage reports to verify';
       case 'active_renewal':
-        return 'No active renewal borrows';
+        return selectedRenewalUserType == 'student'
+            ? 'No active student renewals'
+            : 'No active personnel renewals';
       case 'renewal_pending_next_sem':
         return 'No students pending next semester';
       default:
@@ -652,7 +733,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
     final lastName = app['last_name'] ?? '';
     final userType = app['user_type'] ?? 'student';
     final status = app['status'] ?? '';
-    final bikeNumber = app['assigned_bike_number'] ?? app['renewal_gso_bike_number'] ?? 'N/A';
+    final bikeNumber = app['renewal_gso_bike_number'] ?? app['assigned_bike_number'] ?? 'N/A';
     final suspensionCount = app['suspension_count'] ?? 0;
     final isDamageReported = status == 'renewal_bike_damage_reported';
 
@@ -1064,7 +1145,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
   Widget _borrowCard(Map<String, dynamic> app, String type) {
     final firstName = app['first_name'] ?? app['firstName'] ?? '';
     final lastName = app['last_name'] ?? app['lastName'] ?? '';
-    final bikeNumber = app['bike_number'] ?? app['bikeNumber'] ?? 'N/A';
+    final bikeNumber = app['bike_number'] ?? app['bikeNumber'] ?? app['assigned_bike_number'] ?? 'N/A';
     final status = app['status'] ?? '';
     final srCode = app['sr_code'] ?? app['srCode'];
     final employeeNo = app['employee_no'] ?? app['employeeNo'];
@@ -1289,8 +1370,6 @@ class _RenewalBikeInspectionDialogState
       widget.application['status'] == 'renewal_bike_damage_reported';
   int get _suspensionCount => widget.application['suspension_count'] ?? 0;
 
-  bool get _allConditionsOk =>
-      _frameOk && _wheelsOk && _brakesOk && _chainGearOk && _saddleOk && _lightsOk;
 
   bool get _canSubmit =>
       _gsoNameController.text.trim().isNotEmpty &&
@@ -1368,90 +1447,113 @@ class _RenewalBikeInspectionDialogState
   }
 
   Future<void> _submitInspection() async {
-    if (!_canSubmit) return;
-    setState(() => _isSubmitting = true);
+  if (!_canSubmit) return;
+  setState(() => _isSubmitting = true);
 
-    try {
-      final applicationId = widget.application['id'];
-      final now = DateTime.now().toUtc().toIso8601String();
-      final currentUserId = supabase.auth.currentUser?.id;
+  try {
+    final applicationId = widget.application['id'];
+    final now = DateTime.now().toUtc().toIso8601String();
+    final currentUserId = supabase.auth.currentUser?.id;
 
-      if (_inspectionResult == 'no_damage') {
-        // NO DAMAGE PATH
-        if (_isStudent) {
-          // Student: No damage → renewal_pending_next_sem
-          // They wait until next semester, then come back for new bike assignment
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'renewal_pending_next_sem',
-            'renewal_gso_checked_by': _gsoNameController.text.trim(),
-            'updated_at': now,
-          }).eq('id', applicationId);
+    if (_inspectionResult == 'no_damage') {
+      // NO DAMAGE PATH
+      if (_isStudent) {
+        // Student: No damage → renewal_pending_next_sem
+        await supabase.from('borrowing_applications_version2').update({
+          'status': 'renewal_pending_next_sem',
+          'renewal_gso_checked_by': _gsoNameController.text.trim(),
+          'updated_at': now,
+        }).eq('id', applicationId);
 
-          // Return the bike to available
-          final bikeId = widget.application['assigned_bike_id'] ?? 
-                         widget.application['renewal_gso_bike_id'];
-          if (bikeId != null) {
-            await supabase.from('bikes').update({
-              'status': 'available',
-              'current_user_id': null,
-            }).eq('id', bikeId);
-          }
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Student set to pending next semester. Bike returned.'),
-                backgroundColor: Colors.teal,
-              ),
-            );
-          }
-        } else {
-          // Personnel: No damage → renewal_bike_checked
-          // Ready for QR scan to activate renewal
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'renewal_bike_checked',
-            'renewal_gso_checked_by': _gsoNameController.text.trim(),
-            'updated_at': now,
-          }).eq('id', applicationId);
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Bike checked. Personnel can now scan QR for renewal.'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        }
-      } else {
-        // DAMAGED PATH
-        String? damagePhotoUrl;
-        if (_damagePhotoBytes != null) {
-          damagePhotoUrl = await _uploadDamagePhoto();
-        }
-
-        // Create bike damage report
-        final bikeId = widget.application['assigned_bike_id'] ?? 
-                       widget.application['renewal_gso_bike_id'];
-        
-        int? reportId;
+        // Return the bike to available
+        final bikeId = widget.application['renewal_gso_bike_id'] ??
+            widget.application['assigned_bike_id'];
         if (bikeId != null) {
-          final reportResponse = await supabase.from('bike_reports').insert({
-            'bike_id': bikeId,
-            'application_id': applicationId,
-            'is_renewal': true,
-            'report_type': 'damage',
-            'description': _damageRemarksController.text.trim(),
-            'photo_url': damagePhotoUrl,
-            'reported_by': currentUserId,
-            'status': 'pending',
-            'created_at': now,
-          }).select('id').single();
-          reportId = reportResponse['id'];
+          await supabase.from('bikes').update({
+            'status': 'available',
+            'current_user_id': null,
+          }).eq('id', bikeId);
         }
 
-        // Determine next status based on user type
-        final forwardedTo = _isStudent ? 'forwarded_discipline' : 'forwarded_hrmo';
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Student set to pending next semester. Bike returned.'),
+              backgroundColor: Colors.teal,
+            ),
+          );
+        }
+
+        widget.onComplete();
+        if (mounted) Navigator.pop(context);
+
+      } else {
+        // Personnel: No damage → open release dialog immediately
+        // DON'T change status here, let the mobile app handle it after QR scan
+        await supabase.from('borrowing_applications_version2').update({
+          'renewal_gso_checked_by': _gsoNameController.text.trim(),
+          'updated_at': now,
+          // status stays as renewal_medical_approved
+        }).eq('id', applicationId);
+
+        if (mounted) {
+          Navigator.pop(context); // close inspection dialog
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => _PersonnelRenewalReleaseDialog(
+              application: {
+                ...widget.application,
+                'renewal_gso_checked_by': _gsoNameController.text.trim(),
+              },
+              onComplete: widget.onComplete,
+            ),
+          );
+        }
+      }
+
+    } else {
+      // DAMAGED PATH
+      String? damagePhotoUrl;
+      if (_damagePhotoBytes != null) {
+        damagePhotoUrl = await _uploadDamagePhoto();
+      }
+
+      final bikeId = widget.application['renewal_gso_bike_id'] ??
+          widget.application['assigned_bike_id'];
+
+      int? reportId;
+      if (bikeId != null) {
+        final reportResponse = await supabase.from('bike_reports').insert({
+          'bike_id': bikeId,
+          'application_id': applicationId,
+          'is_renewal': true,
+          'report_type': 'damage',
+          'description': _damageRemarksController.text.trim(),
+          'photo_url': damagePhotoUrl,
+          'reported_by': currentUserId,
+          'status': 'pending',
+          'created_at': now,
+        }).select('id').single();
+        reportId = reportResponse['id'];
+      }
+
+      if (_suspensionCount >= 1) {
+        // 2nd offense → terminated
+        await supabase.from('borrowing_applications_version2').update({
+          'status': 'terminated',
+          'renewal_gso_checked_by': _gsoNameController.text.trim(),
+          'renewal_gso_damage_remarks': _damageRemarksController.text.trim(),
+          'renewal_gso_damage_photo_url': damagePhotoUrl,
+          'renewal_gso_damage_report_id': reportId,
+          'renewal_terminated_at': now,
+          'renewal_terminated_by': currentUserId,
+          'renewal_terminated_remarks': 'Second offense - automatic termination',
+          'updated_at': now,
+        }).eq('id', applicationId);
+      } else {
+        // 1st offense → forward to discipline/HRMO
+        final nextStatus = _isStudent ? 'forwarded_discipline' : 'forwarded_hrmo';
 
         await supabase.from('borrowing_applications_version2').update({
           'status': 'renewal_bike_damaged',
@@ -1459,57 +1561,60 @@ class _RenewalBikeInspectionDialogState
           'renewal_gso_damage_remarks': _damageRemarksController.text.trim(),
           'renewal_gso_damage_photo_url': damagePhotoUrl,
           'renewal_gso_damage_report_id': reportId,
+          'updated_at': now,
+        }).eq('id', applicationId);
+
+        await supabase.from('borrowing_applications_version2').update({
+          'status': nextStatus,
           'renewal_forwarded_by': _gsoNameController.text.trim(),
           'renewal_forwarded_remarks': 'Bike damage confirmed during inspection',
           'updated_at': now,
         }).eq('id', applicationId);
+      }
 
-        // Then update to forwarded status
-        await supabase.from('borrowing_applications_version2').update({
-          'status': forwardedTo,
-          'updated_at': now,
-        }).eq('id', applicationId);
+      // Set bike to maintenance
+      if (bikeId != null) {
+        await supabase.from('bikes').update({
+          'status': 'maintenance',
+          'current_user_id': null,
+        }).eq('id', bikeId);
+      }
 
-        // Set bike to maintenance
-        if (bikeId != null) {
-          await supabase.from('bikes').update({
-            'status': 'maintenance',
-            'current_user_id': null,
-          }).eq('id', bikeId);
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Damage reported. Forwarded to ${_isStudent ? 'Discipline Office' : 'HRMO'}.',
-              ),
-              backgroundColor: Colors.orange,
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _suspensionCount >= 1
+                  ? 'Second offense detected. Application terminated.'
+                  : 'Damage reported. Forwarded to ${_isStudent ? 'Discipline Office' : 'HRMO'}.',
             ),
-          );
-        }
+            backgroundColor: _suspensionCount >= 1 ? Colors.red : Colors.orange,
+          ),
+        );
       }
 
       widget.onComplete();
       if (mounted) Navigator.pop(context);
-    } catch (e) {
-      debugPrint('Submit inspection error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      setState(() => _isSubmitting = false);
     }
+
+  } catch (e) {
+    debugPrint('Submit inspection error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  } finally {
+    setState(() => _isSubmitting = false);
   }
+}
 
   @override
   Widget build(BuildContext context) {
     final firstName = widget.application['first_name'] ?? '';
     final lastName = widget.application['last_name'] ?? '';
-    final bikeNumber = widget.application['assigned_bike_number'] ?? 
-                       widget.application['renewal_gso_bike_number'] ?? 'N/A';
+    final bikeNumber = widget.application['renewal_gso_bike_number'] ?? 
+                       widget.application['assigned_bike_number'] ?? 'N/A';
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -1703,9 +1808,11 @@ class _RenewalBikeInspectionDialogState
                             'Damaged',
                             Icons.report_problem_rounded,
                             const Color(0xFFD32F2F),
-                            _isStudent
-                                ? 'Forward to Discipline Office'
-                                : 'Forward to HRMO',
+                            _suspensionCount >= 1
+                                ? 'TERMINATION (2nd offense)'
+                                : (_isStudent
+                                    ? 'Forward to Discipline Office'
+                                    : 'Forward to HRMO'),
                           ),
                         ),
                       ],
@@ -1865,7 +1972,9 @@ class _RenewalBikeInspectionDialogState
                     _isSubmitting
                         ? 'Processing...'
                         : _inspectionResult == 'damaged'
-                            ? 'Report Damage & Forward'
+                            ? (_suspensionCount >= 1 
+                                ? 'Confirm Termination'
+                                : 'Report Damage & Forward')
                             : 'Confirm No Damage',
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
@@ -2835,6 +2944,787 @@ class _ReturnDialogState extends State<_ReturnDialog>
           label: Text(
             _isSubmitting ? 'Preparing…' : 'Generate Return QR',
             style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+}
+class _PersonnelRenewalReleaseDialog extends StatefulWidget {
+  final Map<String, dynamic> application;
+  final VoidCallback onComplete;
+
+  const _PersonnelRenewalReleaseDialog({
+    required this.application,
+    required this.onComplete,
+  });
+
+  @override
+  State<_PersonnelRenewalReleaseDialog> createState() =>
+      _PersonnelRenewalReleaseDialogState();
+}
+
+class _PersonnelRenewalReleaseDialogState
+    extends State<_PersonnelRenewalReleaseDialog>
+    with SingleTickerProviderStateMixin {
+  final supabase = Supabase.instance.client;
+
+  bool _isSubmitting = false;
+  bool _showingQr = false;
+  bool _isReleased = false;
+
+  RealtimeChannel? _channel;
+  Timer? _pollTimer;
+
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  final TextEditingController _officerNameController = TextEditingController();
+  final SignatureController _signatureController = SignatureController(
+    penStrokeWidth: 3,
+    penColor: Colors.black,
+    exportBackgroundColor: Colors.white,
+  );
+  bool _isDrawMode = true;
+  bool _hasSignature = false;
+  Uint8List? _uploadedImageBytes;
+  String? _uploadedFileName;
+
+  String get _applicationId => widget.application['id'].toString();
+  String get _applicantName =>
+      '${widget.application['first_name'] ?? ''} ${widget.application['last_name'] ?? ''}'.trim();
+  String get _bikeNumber =>
+      widget.application['renewal_gso_bike_number'] ??
+      widget.application['assigned_bike_number'] ??
+      'N/A';
+  dynamic get _bikeId =>
+      widget.application['renewal_gso_bike_id'] ??
+      widget.application['assigned_bike_id'];
+
+  String get _qrData => 'RENEWAL-$_applicationId';
+
+  bool get _canGenerateQr =>
+      _hasSignature && _officerNameController.text.trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOfficerName();
+    _signatureController.addListener(() {
+      setState(() {
+        _hasSignature =
+            _signatureController.isNotEmpty || _uploadedImageBytes != null;
+      });
+    });
+    _officerNameController.addListener(() => setState(() {}));
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
+        CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _signatureController.dispose();
+    _officerNameController.dispose();
+    _pollTimer?.cancel();
+    if (_channel != null) supabase.removeChannel(_channel!);
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadOfficerName() async {
+    try {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId != null) {
+        final profile = await supabase
+            .from('profiles')
+            .select('email')
+            .eq('id', userId)
+            .maybeSingle();
+        if (profile != null && mounted) {
+          final email = profile['email'] as String;
+          _officerNameController.text =
+              email.split('@')[0].replaceAll('.', ' ').toUpperCase();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading officer name: $e');
+    }
+  }
+
+  Future<void> _pickImage() async {
+    final result = await FilePicker.platform
+        .pickFiles(type: FileType.image, allowMultiple: false);
+    if (result != null && result.files.isNotEmpty) {
+      final bytes = result.files.first.bytes;
+      final fileName = result.files.first.name;
+      if (bytes != null) {
+        setState(() {
+          _uploadedImageBytes = bytes;
+          _uploadedFileName = fileName;
+          _hasSignature = true;
+        });
+      }
+    }
+  }
+
+  Future<String?> _uploadSignature(Uint8List bytes, String fileName) async {
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final userId = supabase.auth.currentUser?.id ?? 'unknown';
+      final path = 'gso_signatures/${userId}_${timestamp}_$fileName';
+      await supabase.storage.from('signatures').uploadBinary(path, bytes);
+      return supabase.storage.from('signatures').getPublicUrl(path);
+    } catch (e) {
+      debugPrint('Upload error: $e');
+      return null;
+    }
+  }
+
+  Future<void> _generateQr() async {
+    if (!_canGenerateQr) return;
+    setState(() => _isSubmitting = true);
+
+    try {
+      Uint8List? sigBytes;
+      String fileName;
+      if (_isDrawMode) {
+        sigBytes = await _signatureController.toPngBytes();
+        if (sigBytes == null) throw Exception('Failed to export signature');
+        fileName = 'drawn_signature.png';
+      } else {
+        sigBytes = _uploadedImageBytes!;
+        fileName = _uploadedFileName ?? 'uploaded_signature.png';
+      }
+
+      final signatureUrl = await _uploadSignature(sigBytes, fileName);
+      if (signatureUrl == null) throw Exception('Signature upload failed');
+
+      final now = DateTime.now().toUtc().toIso8601String();
+
+      // Save GSO signature info — bike stays the same
+      await supabase.from('borrowing_applications_version2').update({
+        'renewal_gso_checked_by': _officerNameController.text.trim(),
+        'renewal_gso_signature_url': signatureUrl,
+        'updated_at': now,
+      }).eq('id', _applicationId);
+
+      // Mark the existing bike as reserved until QR scan confirms
+      if (_bikeId != null) {
+        await supabase.from('bikes').update({
+          'status': 'in_use',
+          'current_user_id': null,
+        }).eq('id', _bikeId);
+      }
+
+      setState(() {
+        _showingQr = true;
+        _isSubmitting = false;
+      });
+
+      _startRealtimeListener();
+      _startPollingFallback();
+    } catch (e) {
+      debugPrint('Generate QR error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+      setState(() => _isSubmitting = false);
+    }
+  }
+
+  void _startRealtimeListener() {
+    final channelName =
+        'personnel_renewal_${_applicationId}_${DateTime.now().millisecondsSinceEpoch}';
+    _channel = supabase.channel(channelName,
+        opts: const RealtimeChannelConfig(ack: true));
+    _channel!
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'borrowing_applications_version2',
+          callback: (payload) {
+            final newStatus = payload.newRecord['status'];
+            final recordId = payload.newRecord['id'].toString();
+            if (recordId == _applicationId &&
+                newStatus == 'active_renewal' &&
+                !_isReleased &&
+                mounted) {
+              _onReleaseDetected();
+            }
+          },
+        )
+        .subscribe((status, [error]) {
+          if (status == RealtimeSubscribeStatus.closed && !_isReleased) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted && !_isReleased) _startRealtimeListener();
+            });
+          }
+        });
+  }
+
+  void _startPollingFallback() {
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_isReleased) {
+        _pollTimer?.cancel();
+        return;
+      }
+      try {
+        final row = await supabase
+            .from('borrowing_applications_version2')
+            .select('status')
+            .eq('id', _applicationId)
+            .maybeSingle();
+        if (row != null && row['status'] == 'active_renewal' && mounted) {
+          _onReleaseDetected();
+        }
+      } catch (e) {
+        debugPrint('Poll error: $e');
+      }
+    });
+  }
+
+  void _onReleaseDetected() {
+    if (_isReleased) return;
+    setState(() => _isReleased = true);
+    _pollTimer?.cancel();
+    _pulseController.stop();
+    widget.onComplete();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 600,
+        constraints: const BoxConstraints(maxHeight: 780),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [Color(0xFF388E3C), Color(0xFF66BB6A)]),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    _showingQr
+                        ? Icons.qr_code_2_rounded
+                        : Icons.autorenew_rounded,
+                    color: Colors.white,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _showingQr
+                            ? 'Waiting for Personnel'
+                            : 'Personnel Renewal Release',
+                        style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A)),
+                      ),
+                      Text(
+                        _showingQr
+                            ? 'Ask personnel to scan QR with the PedalHub app'
+                            : '$_applicantName • Bike #$_bikeNumber',
+                        style:
+                            TextStyle(fontSize: 13, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF388E3C).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF388E3C)),
+                  ),
+                  child: Text(
+                    _qrData,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                        color: Color(0xFF388E3C)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            Expanded(
+              child: _showingQr ? _buildQrView() : _buildFormView(),
+            ),
+
+            const SizedBox(height: 20),
+            _buildActionButtons(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFormView() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Info banner
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5E9),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: const Color(0xFF388E3C).withOpacity(0.3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  const Icon(Icons.check_circle_rounded,
+                      color: Color(0xFF388E3C), size: 16),
+                  const SizedBox(width: 6),
+                  const Text('Bike Inspection Passed',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF388E3C),
+                          fontSize: 13)),
+                ]),
+                const SizedBox(height: 6),
+                Text(
+                  'No damage found. Personnel will keep their current bike. Provide your signature and generate the QR for them to scan.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 8),
+                Row(children: [
+                  const Icon(Icons.pedal_bike_rounded,
+                      size: 14, color: Color(0xFF388E3C)),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Assigned Bike: #$_bikeNumber',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF388E3C)),
+                  ),
+                ]),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // Officer name
+          const Text('GSO Officer Name *',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A1A))),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _officerNameController,
+            decoration: InputDecoration(
+              hintText: 'Enter officer full name',
+              prefixIcon: const Icon(Icons.badge_rounded),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Signature
+          const Text('GSO Signature *',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A1A))),
+          const SizedBox(height: 4),
+          Text('Draw or upload your signature:',
+              style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Container(
+                  height: 150,
+                  decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey[400]!),
+                      borderRadius: BorderRadius.circular(8)),
+                  child: _isDrawMode
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Signature(
+                              controller: _signatureController,
+                              backgroundColor: Colors.white))
+                      : _uploadedImageBytes == null
+                          ? Center(
+                              child: ElevatedButton.icon(
+                                onPressed: _pickImage,
+                                icon: const Icon(Icons.upload_file, size: 20),
+                                label: const Text('Upload Signature'),
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF388E3C),
+                                    foregroundColor: Colors.white),
+                              ),
+                            )
+                          : ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.memory(_uploadedImageBytes!,
+                                  fit: BoxFit.contain)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Column(children: [
+                IconButton(
+                  icon: const Icon(Icons.clear),
+                  tooltip: 'Clear',
+                  onPressed: () {
+                    _signatureController.clear();
+                    setState(() {
+                      _uploadedImageBytes = null;
+                      _hasSignature = false;
+                    });
+                  },
+                ),
+                IconButton(
+                  icon:
+                      Icon(_isDrawMode ? Icons.upload_file : Icons.edit),
+                  tooltip: _isDrawMode
+                      ? 'Switch to Upload'
+                      : 'Switch to Draw',
+                  onPressed: () {
+                    setState(() {
+                      _isDrawMode = !_isDrawMode;
+                      _uploadedImageBytes = null;
+                      _hasSignature = _signatureController.isNotEmpty;
+                    });
+                  },
+                ),
+              ]),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQrView() {
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: _isReleased
+                ? _statusBanner(
+                    key: const ValueKey('released'),
+                    color: const Color(0xFF388E3C),
+                    bgColor: const Color(0xFFE8F5E9),
+                    icon: Icons.check_circle_rounded,
+                    message:
+                        'Personnel scanned QR! Renewal is now active.',
+                  )
+                : _statusBanner(
+                    key: const ValueKey('waiting'),
+                    color: const Color(0xFF388E3C),
+                    bgColor: const Color(0xFFE8F5E9),
+                    icon: null,
+                    message:
+                        'Waiting for personnel to scan QR on the PedalHub app…',
+                  ),
+          ),
+          const SizedBox(height: 24),
+
+          // Assigned bike banner
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF388E3C).withOpacity(0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: const Color(0xFF388E3C).withOpacity(0.3)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.pedal_bike_rounded,
+                  color: Color(0xFF388E3C), size: 18),
+              const SizedBox(width: 10),
+              Text(
+                'Keeping: Bike #$_bikeNumber',
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF388E3C)),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 20),
+
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              final glowColor = _isReleased
+                  ? const Color(0xFF388E3C)
+                  : const Color(0xFF388E3C);
+              return Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: glowColor.withOpacity(
+                          _isReleased ? 1.0 : _pulseAnimation.value),
+                      width: _isReleased ? 3 : 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: glowColor.withOpacity(0.2 *
+                          (_isReleased ? 1 : _pulseAnimation.value)),
+                      blurRadius: 24,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    QrImageView(
+                      data: _qrData,
+                      version: QrVersions.auto,
+                      size: 200,
+                      backgroundColor: Colors.white,
+                      eyeStyle: const QrEyeStyle(
+                          eyeShape: QrEyeShape.square,
+                          color: Color(0xFF388E3C)),
+                      dataModuleStyle: const QrDataModuleStyle(
+                          dataModuleShape: QrDataModuleShape.square,
+                          color: Color(0xFF1A1A1A)),
+                    ),
+                    if (_isReleased)
+                      Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.92),
+                            borderRadius: BorderRadius.circular(8)),
+                        child: const Center(
+                          child: Icon(Icons.check_circle_rounded,
+                              color: Color(0xFF388E3C), size: 80),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+                color: const Color(0xFF388E3C).withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: const Color(0xFF388E3C).withOpacity(0.3))),
+            child: Text(
+              _qrData,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.5,
+                  color: Color(0xFF388E3C)),
+            ),
+          ),
+          const SizedBox(height: 20),
+          if (!_isReleased)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFF3F4F6),
+                  borderRadius: BorderRadius.circular(12)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Personnel completes on their phone:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[700])),
+                  const SizedBox(height: 10),
+                  _stepRow('1', 'Scan QR code'),
+                  _stepRow('2', 'Face verification'),
+                  _stepRow('3', 'Confirm → status = active_renewal'),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusBanner({
+    required Key key,
+    required Color color,
+    required Color bgColor,
+    required IconData? icon,
+    required String message,
+  }) {
+    return Container(
+      key: key,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.4))),
+      child: Row(children: [
+        icon != null
+            ? Icon(icon, color: color, size: 20)
+            : SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(color))),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(message,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: color,
+                  fontWeight: FontWeight.w600)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _stepRow(String number, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+                color: const Color(0xFF388E3C),
+                borderRadius: BorderRadius.circular(99)),
+            child: Center(
+              child: Text(number,
+                  style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(fontSize: 12, color: Colors.grey[700])),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButtons() {
+    if (_showingQr && _isReleased) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF388E3C),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.check_circle_rounded, size: 18),
+            label: const Text('Done',
+                style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      );
+    }
+
+    if (_showingQr && !_isReleased) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text('QR is active — waiting for personnel…',
+              style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel',
+                style: TextStyle(color: Colors.grey[600])),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel',
+              style: TextStyle(color: Colors.grey[600])),
+        ),
+        const SizedBox(width: 8),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _canGenerateQr
+                ? const Color(0xFF388E3C)
+                : Colors.grey[300],
+            foregroundColor:
+                _canGenerateQr ? Colors.white : Colors.grey[500],
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 12),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8)),
+            elevation: _canGenerateQr ? 2 : 0,
+          ),
+          onPressed: _isSubmitting || !_canGenerateQr ? null : _generateQr,
+          icon: _isSubmitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.qr_code_rounded, size: 18),
+          label: Text(
+            _isSubmitting ? 'Uploading…' : 'Generate QR Code',
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
       ],

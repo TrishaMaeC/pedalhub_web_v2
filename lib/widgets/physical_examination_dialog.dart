@@ -67,10 +67,11 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
   String? _uploadedFileName;
   bool _isSubmitting = false;
   DateTime _examinationDate = DateTime.now();
+
   bool _hasAbnormalities() {
-  return _examFindings.values.contains(false);
-}
-  
+    return _examFindings.values.contains(false);
+  }
+
   // Previous examination data for comparison
   Map<String, dynamic>? _previousExam;
 
@@ -79,13 +80,12 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
     super.initState();
 
     _signatureController.addListener(() {
-      setState(() {
-      });
+      setState(() {});
     });
 
     _weightController.addListener(_calculateBMI);
     _heightController.addListener(_calculateBMI);
-    
+
     if (widget.isReassessment) {
       _loadPreviousExamination();
     }
@@ -96,11 +96,11 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
       final response = await supabase
           .from('physical_examinations')
           .select('*')
-          .eq(widget.isRenewal ? 'renewal_application_id' : 'application_id', widget.applicationId)
+          .eq('application_id', widget.applicationId)
           .order('examination_date', ascending: false)
           .limit(1)
           .maybeSingle();
-      
+
       if (response != null) {
         setState(() {
           _previousExam = response;
@@ -184,11 +184,13 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
   Future<String?> _uploadSignature(Uint8List bytes, String fileName) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final path = 'physician_signatures/${widget.applicationId}_${timestamp}_$fileName';
+      final path =
+          'physician_signatures/${widget.applicationId}_${timestamp}_$fileName';
 
       await supabase.storage.from('signatures').uploadBinary(path, bytes);
 
-      final publicUrl = supabase.storage.from('signatures').getPublicUrl(path);
+      final publicUrl =
+          supabase.storage.from('signatures').getPublicUrl(path);
       return publicUrl;
     } catch (e) {
       debugPrint('Upload error: $e');
@@ -197,138 +199,157 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
   }
 
   Future<void> _submitExamination(bool isPassed) async {
-  // 1️⃣ Validate form
-  if (!_formKey.currentState!.validate()) return;
+    // 1️⃣ Validate form
+    if (!_formKey.currentState!.validate()) return;
 
-  // 2️⃣ Check signature
-  if (_isDrawMode && _signatureController.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please draw your signature'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
-
-  if (!_isDrawMode && _uploadedImageBytes == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please upload a signature'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
-
-  setState(() => _isSubmitting = true);
-
-  try {
-    // 3️⃣ Prepare signature bytes
-    Uint8List sigBytes;
-    String fileName;
-    if (_isDrawMode) {
-      sigBytes = await _signatureController.toPngBytes() ?? Uint8List(0);
-      if (sigBytes.isEmpty) throw Exception('Signature generation failed');
-      fileName = 'drawn_signature.png';
-    } else {
-      sigBytes = _uploadedImageBytes!;
-      fileName = _uploadedFileName ?? 'uploaded_signature.png';
-    }
-
-    // 4️⃣ Upload signature to Supabase Storage
-    final signatureUrl = await _uploadSignature(sigBytes, fileName);
-    if (signatureUrl == null) throw Exception('Failed to upload signature');
-
-    // 5️⃣ Determine status updates
-    final borrowingStatus = isPassed
-        ? (widget.isRenewal ? 'renewal_health' : 'fit_to_use')
-        : (widget.isRenewal ? 'renewal_health_rejected' : 'rejected_health');
-    final appointmentStatus = isPassed ? 'completed' : 'cancelled';
-
-    // 6️⃣ Insert physical examination
-    await supabase.from('physical_examinations').insert({
-      'application_id': (widget.isRenewal || widget.isReassessment) ? null : widget.applicationId,
-      'renewal_application_id': (widget.isRenewal || widget.isReassessment) ? widget.applicationId : null,
-      'weight': double.parse(_weightController.text),
-      'height': double.parse(_heightController.text),
-      'bmi': _bmi,
-      'bmi_category': _bmiCategory,
-      'blood_pressure': _bloodPressureController.text.trim(),
-      'heart_rate': _heartRateController.text.trim(),
-      'balance': _examFindings['balance'],
-      'musculoskeletal': _examFindings['musculoskeletal'],
-      'lungs': _examFindings['lungs'],
-      'heart': _examFindings['heart'],
-      'extremities': _examFindings['extremities'],
-      'hearing': _examFindings['hearing'],
-      'vision': _examFindings['vision'],
-      'remarks': _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim(),
-      'physician_name': _physicianNameController.text.trim(),
-      'physician_license_number': _licenseNumberController.text.trim(),
-      'physician_signature_url': signatureUrl,
-      'examination_date': _examinationDate.toIso8601String(),
-      'created_by': supabase.auth.currentUser?.id,
-      'is_reassessment': widget.isReassessment,
-    });
-
-    // 7️⃣ Update borrowing/renewal applications
-    if (widget.isRenewal) {
-      await supabase.from('renewal_applications').update({
-        'status': borrowingStatus,
-        'health_approval_date': DateTime.now().toIso8601String(),
-        'health_signatory_name': _physicianNameController.text.trim(),
-        'health_signature_url': signatureUrl,
-        'health_remarks': _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim(),
-      }).eq('id', widget.applicationId);
-    } else {
-      Map<String, dynamic> updates = {'status': borrowingStatus};
-      if (widget.isReassessment) {
-        updates['reassessment_requested'] = false;
-        updates['reassessment_approved'] = null;
-        updates['reassessment_request_date'] = null;
-      }
-      await supabase.from('borrowing_applications_version2').update(updates).eq('id', widget.applicationId);
-    }
-
-    // 8️⃣ Update medical appointments
-    await supabase
-        .from('medical_appointments')
-        .update({'status': appointmentStatus})
-        .eq('application_id', widget.applicationId);
-
-    // 9️⃣ Show success SnackBar & close dialog
-    if (mounted) {
-      Navigator.pop(context);
+    // 2️⃣ Check signature
+    if (_isDrawMode && _signatureController.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.isReassessment
-                ? 'Re-assessment completed! Status: ${isPassed ? 'PASSED' : 'FAILED'}'
-                : isPassed
-                    ? 'Physical examination recorded successfully! Student PASSED.'
-                    : 'Physical examination recorded. Student FAILED.',
-          ),
-          backgroundColor: isPassed ? Colors.green : Colors.red,
-          duration: const Duration(seconds: 3),
+        const SnackBar(
+          content: Text('Please draw your signature'),
+          backgroundColor: Colors.orange,
         ),
       );
-      widget.onCompleted();
+      return;
     }
-  } catch (e) {
-    if (mounted) {
+
+    if (!_isDrawMode && _uploadedImageBytes == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('Please upload a signature'),
+          backgroundColor: Colors.orange,
+        ),
       );
+      return;
     }
-  } finally {
-    setState(() => _isSubmitting = false);
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      // 3️⃣ Prepare signature bytes
+      Uint8List sigBytes;
+      String fileName;
+      if (_isDrawMode) {
+        sigBytes = await _signatureController.toPngBytes() ?? Uint8List(0);
+        if (sigBytes.isEmpty) throw Exception('Signature generation failed');
+        fileName = 'drawn_signature.png';
+      } else {
+        sigBytes = _uploadedImageBytes!;
+        fileName = _uploadedFileName ?? 'uploaded_signature.png';
+      }
+
+      // 4️⃣ Upload signature
+      final signatureUrl = await _uploadSignature(sigBytes, fileName);
+      if (signatureUrl == null) throw Exception('Failed to upload signature');
+
+      // 5️⃣ Determine correct status values
+      String borrowingStatus;
+      if (widget.isRenewal) {
+        borrowingStatus = isPassed
+            ? 'renewal_medical_approved'
+            : 'renewal_medical_rejected';
+      } else {
+        borrowingStatus = isPassed ? 'fit_to_use' : 'health_rejected';
+      }
+
+      // 6️⃣ Insert physical examination
+      // Schema only has application_id + is_renewal flag (no renewal_application_id column)
+      await supabase.from('physical_examinations').insert({
+        'application_id': widget.applicationId,
+        'is_renewal': widget.isRenewal,
+        'is_reassessment': widget.isReassessment,
+        'weight': double.parse(_weightController.text),
+        'height': double.parse(_heightController.text),
+        'bmi': _bmi,
+        'bmi_category': _bmiCategory,
+        'blood_pressure': _bloodPressureController.text.trim(),
+        'heart_rate': _heartRateController.text.trim(),
+        'balance': _examFindings['balance'],
+        'musculoskeletal': _examFindings['musculoskeletal'],
+        'lungs': _examFindings['lungs'],
+        'heart': _examFindings['heart'],
+        'extremities': _examFindings['extremities'],
+        'hearing': _examFindings['hearing'],
+        'vision': _examFindings['vision'],
+        'remarks': _remarksController.text.trim().isEmpty
+            ? null
+            : _remarksController.text.trim(),
+        'physician_name': _physicianNameController.text.trim(),
+        'physician_license_number': _licenseNumberController.text.trim(),
+        'physician_signature_url': signatureUrl,
+        'examination_date': _examinationDate.toIso8601String(),
+        'created_by': supabase.auth.currentUser?.id,
+      });
+
+      // 7️⃣ Update borrowing_applications_version2
+      // NOTE: If your trigger update_application_status_after_exam already
+      // handles status updates, you may be able to remove this block.
+      if (widget.isRenewal) {
+        await supabase
+            .from('borrowing_applications_version2')
+            .update({
+              'status': borrowingStatus,
+              'renewal_medical_remarks':
+                  _remarksController.text.trim().isEmpty
+                      ? null
+                      : _remarksController.text.trim(),
+              'renewal_medical_signatory_name':
+                  _physicianNameController.text.trim(),
+              'renewal_medical_signature_url': signatureUrl,
+            })
+            .eq('id', widget.applicationId);
+      } else {
+        final Map<String, dynamic> updates = {'status': borrowingStatus};
+        if (widget.isReassessment) {
+          updates['reassessment_requested'] = false;
+          updates['reassessment_approved'] = null;
+          updates['reassessment_request_date'] = null;
+        }
+        await supabase
+            .from('borrowing_applications_version2')
+            .update(updates)
+            .eq('id', widget.applicationId);
+      }
+
+      // 8️⃣ Update medical appointment status
+      await supabase
+          .from('medical_appointments_version2')
+          .update({'status': isPassed ? 'completed' : 'cancelled'})
+          .eq('application_id', widget.applicationId);
+
+      // 9️⃣ Show success and close
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.isReassessment
+                  ? 'Re-assessment completed! Status: ${isPassed ? 'PASSED' : 'FAILED'}'
+                  : isPassed
+                      ? 'Physical examination recorded successfully! Student PASSED.'
+                      : 'Physical examination recorded. Student FAILED.',
+            ),
+            backgroundColor: isPassed ? Colors.green : Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        widget.onCompleted();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      setState(() => _isSubmitting = false);
+    }
   }
-}
 
   Widget _buildPreviousExamComparison() {
     if (_previousExam == null) return const SizedBox.shrink();
-    
+
     return Container(
       margin: const EdgeInsets.only(bottom: 24),
       padding: const EdgeInsets.all(16),
@@ -362,7 +383,6 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
             ],
           ),
           const Divider(height: 20),
-          
           Row(
             children: [
               Expanded(
@@ -389,7 +409,6 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
             ],
           ),
           const SizedBox(height: 12),
-          
           Row(
             children: [
               Expanded(
@@ -417,20 +436,16 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, color: Colors.grey),
-        ),
+        Text(label,
+            style: const TextStyle(fontSize: 11, color: Colors.grey)),
         const SizedBox(height: 2),
-        Text(
-          value,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-        ),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 14, fontWeight: FontWeight.bold)),
         if (subtitle != null && subtitle.isNotEmpty)
-          Text(
-            subtitle,
-            style: const TextStyle(fontSize: 11, color: Colors.grey),
-          ),
+          Text(subtitle,
+              style:
+                  const TextStyle(fontSize: 11, color: Colors.grey)),
       ],
     );
   }
@@ -447,6 +462,7 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Header ──────────────────────────────────────
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -457,11 +473,13 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                         widget.isReassessment
                             ? 'Physical Re-assessment Form'
                             : 'Physical Examination & Diagnostic Form',
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold),
                       ),
                       Text(
                         'Student: ${widget.studentName}',
-                        style: const TextStyle(fontSize: 14, color: Colors.grey),
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.grey),
                       ),
                     ],
                   ),
@@ -475,13 +493,16 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
               const Divider(),
               const SizedBox(height: 16),
 
+              // ── Scrollable body ──────────────────────────────
               Expanded(
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (widget.isReassessment) _buildPreviousExamComparison(),
+                      if (widget.isReassessment)
+                        _buildPreviousExamComparison(),
 
+                      // ── BMI ──────────────────────────────────
                       _buildSectionTitle('Body Mass Index (BMI)'),
                       const SizedBox(height: 12),
                       Row(
@@ -496,8 +517,11 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               ),
                               keyboardType: TextInputType.number,
                               validator: (value) {
-                                if (value == null || value.trim().isEmpty) return 'Required';
-                                if (double.tryParse(value) == null) return 'Invalid number';
+                                if (value == null ||
+                                    value.trim().isEmpty)
+                                  return 'Required';
+                                if (double.tryParse(value) == null)
+                                  return 'Invalid number';
                                 return null;
                               },
                             ),
@@ -513,8 +537,11 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               ),
                               keyboardType: TextInputType.number,
                               validator: (value) {
-                                if (value == null || value.trim().isEmpty) return 'Required';
-                                if (double.tryParse(value) == null) return 'Invalid number';
+                                if (value == null ||
+                                    value.trim().isEmpty)
+                                  return 'Required';
+                                if (double.tryParse(value) == null)
+                                  return 'Invalid number';
                                 return null;
                               },
                             ),
@@ -528,37 +555,55 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           decoration: BoxDecoration(
                             color: Colors.blue[50],
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blue[200]!),
+                            border:
+                                Border.all(color: Colors.blue[200]!),
                           ),
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
-                                  const Icon(Icons.analytics, color: Colors.blue),
+                                  const Icon(Icons.analytics,
+                                      color: Colors.blue),
                                   const SizedBox(width: 8),
-                                  const Text('BMI Result:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                  const Text('BMI Result:',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14)),
                                   const SizedBox(width: 8),
                                   Text(
                                     _bmi!.toStringAsFixed(1),
-                                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.blue),
+                                    style: const TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue),
                                   ),
                                 ],
                               ),
                               const SizedBox(height: 8),
                               Row(
                                 children: [
-                                  const Text('Category:', style: TextStyle(fontSize: 14)),
+                                  const Text('Category:',
+                                      style:
+                                          TextStyle(fontSize: 14)),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                    padding:
+                                        const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 4),
                                     decoration: BoxDecoration(
                                       color: _getBMIColor(),
-                                      borderRadius: BorderRadius.circular(12),
+                                      borderRadius:
+                                          BorderRadius.circular(12),
                                     ),
                                     child: Text(
                                       _bmiCategory,
-                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12),
                                     ),
                                   ),
                                 ],
@@ -570,6 +615,7 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
 
                       const SizedBox(height: 24),
 
+                      // ── Vital Signs ───────────────────────────
                       _buildSectionTitle('Vital Signs'),
                       const SizedBox(height: 12),
                       Row(
@@ -584,7 +630,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                                 prefixIcon: Icon(Icons.favorite),
                               ),
                               validator: (value) {
-                                if (value == null || value.trim().isEmpty) return 'Required';
+                                if (value == null ||
+                                    value.trim().isEmpty)
+                                  return 'Required';
                                 return null;
                               },
                             ),
@@ -601,7 +649,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               ),
                               keyboardType: TextInputType.number,
                               validator: (value) {
-                                if (value == null || value.trim().isEmpty) return 'Required';
+                                if (value == null ||
+                                    value.trim().isEmpty)
+                                  return 'Required';
                                 return null;
                               },
                             ),
@@ -611,13 +661,18 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
 
                       const SizedBox(height: 24),
 
-                      _buildSectionTitle('Physical Examination Findings'),
+                      // ── Examination Findings ──────────────────
+                      _buildSectionTitle(
+                          'Physical Examination Findings'),
                       const SizedBox(height: 8),
-                      const Text('Check if finding is NORMAL', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      const Text('Check if finding is NORMAL',
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey)),
 
                       if (_hasAbnormalities())
                         Container(
-                          margin: const EdgeInsets.only(top: 8, bottom: 12),
+                          margin: const EdgeInsets.only(
+                              top: 8, bottom: 12),
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: Colors.orange.shade50,
@@ -626,12 +681,15 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           ),
                           child: Row(
                             children: const [
-                              Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                              Icon(Icons.warning_amber_rounded,
+                                  color: Colors.orange),
                               SizedBox(width: 8),
                               Expanded(
                                 child: Text(
                                   'Abnormal findings detected. Student cannot PASS. Choose FAIL instead.',
-                                  style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w600),
+                                  style: TextStyle(
+                                      color: Colors.orange,
+                                      fontWeight: FontWeight.w600),
                                 ),
                               ),
                             ],
@@ -639,9 +697,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                         ),
 
                       const SizedBox(height: 12),
-                      const SizedBox(height: 12),
                       _buildCheckboxTile('Balance', 'balance'),
-                      _buildCheckboxTile('Musculo-Skeletal', 'musculoskeletal'),
+                      _buildCheckboxTile(
+                          'Musculo-Skeletal', 'musculoskeletal'),
                       _buildCheckboxTile('Lungs', 'lungs'),
                       _buildCheckboxTile('Heart', 'heart'),
                       _buildCheckboxTile('Extremities', 'extremities'),
@@ -650,6 +708,7 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
 
                       const SizedBox(height: 24),
 
+                      // ── Remarks ───────────────────────────────
                       _buildSectionTitle('Remarks'),
                       const SizedBox(height: 12),
                       TextFormField(
@@ -665,6 +724,7 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                       const Divider(thickness: 2),
                       const SizedBox(height: 16),
 
+                      // ── Physician ─────────────────────────────
                       _buildSectionTitle('Attending Physician'),
                       const SizedBox(height: 12),
                       TextFormField(
@@ -675,7 +735,8 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           prefixIcon: Icon(Icons.person),
                         ),
                         validator: (value) {
-                          if (value == null || value.trim().isEmpty) return 'Please enter physician name';
+                          if (value == null || value.trim().isEmpty)
+                            return 'Please enter physician name';
                           return null;
                         },
                       ),
@@ -688,30 +749,44 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           prefixIcon: Icon(Icons.badge),
                         ),
                         validator: (value) {
-                          if (value == null || value.trim().isEmpty) return 'Please enter license number';
+                          if (value == null || value.trim().isEmpty)
+                            return 'Please enter license number';
                           return null;
                         },
                       ),
 
                       const SizedBox(height: 16),
 
-                      const Text('Date of Examination *', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      // ── Exam Date ─────────────────────────────
+                      const Text('Date of Examination *',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
                       InkWell(
                         onTap: _selectDate,
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey[400]!),
+                            border: Border.all(
+                                color: Colors.grey[400]!),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.calendar_today, size: 20),
+                              const Icon(Icons.calendar_today,
+                                  size: 20),
                               const SizedBox(width: 12),
-                              Text(DateFormat('MMMM dd, yyyy').format(_examinationDate), style: const TextStyle(fontSize: 14)),
+                              Text(
+                                DateFormat('MMMM dd, yyyy')
+                                    .format(_examinationDate),
+                                style:
+                                    const TextStyle(fontSize: 14),
+                              ),
                               const Spacer(),
-                              Icon(Icons.edit, size: 16, color: Colors.grey[600]),
+                              Icon(Icons.edit,
+                                  size: 16,
+                                  color: Colors.grey[600]),
                             ],
                           ),
                         ),
@@ -719,7 +794,11 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
 
                       const SizedBox(height: 16),
 
-                      const Text('Physician Signature *', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      // ── Signature ─────────────────────────────
+                      const Text('Physician Signature *',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -727,14 +806,18 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                             child: Container(
                               height: 150,
                               decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey[400]!),
-                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                    color: Colors.grey[400]!),
+                                borderRadius:
+                                    BorderRadius.circular(8),
                               ),
                               child: _isDrawMode
                                   ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
+                                      borderRadius:
+                                          BorderRadius.circular(8),
                                       child: Signature(
-                                        controller: _signatureController,
+                                        controller:
+                                            _signatureController,
                                         backgroundColor: Colors.white,
                                       ),
                                     )
@@ -742,13 +825,20 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                                       ? Center(
                                           child: ElevatedButton.icon(
                                             onPressed: _pickImage,
-                                            icon: const Icon(Icons.upload_file, size: 20),
-                                            label: const Text('Upload Signature'),
+                                            icon: const Icon(
+                                                Icons.upload_file,
+                                                size: 20),
+                                            label: const Text(
+                                                'Upload Signature'),
                                           ),
                                         )
                                       : ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: Image.memory(_uploadedImageBytes!, fit: BoxFit.contain),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          child: Image.memory(
+                                            _uploadedImageBytes!,
+                                            fit: BoxFit.contain,
+                                          ),
                                         ),
                             ),
                           ),
@@ -760,21 +850,24 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                                 tooltip: 'Clear',
                                 onPressed: () {
                                   _signatureController.clear();
-                                  setState(() {
-                                    _uploadedImageBytes = null;
-                                  });
+                                  setState(() =>
+                                      _uploadedImageBytes = null);
                                 },
                               ),
                               IconButton(
-                                icon: Icon(_isDrawMode ? Icons.upload_file : Icons.edit),
-                                tooltip: _isDrawMode ? 'Upload' : 'Draw',
+                                icon: Icon(_isDrawMode
+                                    ? Icons.upload_file
+                                    : Icons.edit),
+                                tooltip: _isDrawMode
+                                    ? 'Upload'
+                                    : 'Draw',
                                 onPressed: () {
                                   setState(() {
                                     _isDrawMode = !_isDrawMode;
                                     _uploadedImageBytes = null;
                                   });
                                 },
-                              )
+                              ),
                             ],
                           ),
                         ],
@@ -786,13 +879,17 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
 
               const SizedBox(height: 16),
 
+              // ── FAIL / PASS buttons ──────────────────────────
               Row(
                 children: [
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _isSubmitting ? null : () => _submitExamination(false),
+                      onPressed: _isSubmitting
+                          ? null
+                          : () => _submitExamination(false),
                       style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 16),
                         backgroundColor: Colors.red,
                         foregroundColor: Colors.white,
                       ),
@@ -800,20 +897,30 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(
+                                        Colors.white),
+                              ),
                             )
                           : const Icon(Icons.cancel),
-                      label: const Text('FAIL', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('FAIL',
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: (_isSubmitting || _hasAbnormalities())
-                          ? null
-                          : () => _submitExamination(true),
+                      onPressed:
+                          (_isSubmitting || _hasAbnormalities())
+                              ? null
+                              : () => _submitExamination(true),
                       style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 16),
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
                       ),
@@ -821,10 +928,18 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(
+                                        Colors.white),
+                              ),
                             )
                           : const Icon(Icons.check_circle),
-                      label: const Text('PASS', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('PASS',
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ],
@@ -837,25 +952,25 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold));
+    return Text(title,
+        style: const TextStyle(
+            fontSize: 18, fontWeight: FontWeight.bold));
   }
 
   Widget _buildCheckboxTile(String label, String key) {
     final isNormal = _examFindings[key] ?? false;
-
     return CheckboxListTile(
       title: Text(
         label,
         style: TextStyle(
           color: isNormal ? Colors.black : Colors.red,
-          fontWeight: isNormal ? FontWeight.normal : FontWeight.bold,
+          fontWeight:
+              isNormal ? FontWeight.normal : FontWeight.bold,
         ),
       ),
       value: _examFindings[key],
       onChanged: (bool? value) {
-        setState(() {
-          _examFindings[key] = value ?? false;
-        });
+        setState(() => _examFindings[key] = value ?? false);
       },
       controlAffinity: ListTileControlAffinity.leading,
       contentPadding: EdgeInsets.zero,
