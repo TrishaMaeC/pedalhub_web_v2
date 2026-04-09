@@ -168,11 +168,11 @@ class _ForReleasePageState extends State<ForReleasePage> {
       builder: (context) => _ReleaseDialog(
         applicationId: app.id.toString(),
         applicantName: '${app.firstName} ${app.lastName}',
-        bikeNumber: app.assignedBikeNumber ?? 'N/A',
         applicationType: 'new',
-        bikeInfo: null,
         userCampus: userCampus,
         userType: app.userType,
+        assignedBikeId: app.assignedBikeId,
+        assignedBikeNumber: app.assignedBikeNumber,
         onApproved: () async {
           await _fetchNewApplications();
           setState(() {});
@@ -194,13 +194,11 @@ class _ForReleasePageState extends State<ForReleasePage> {
         applicationId: app['id'].toString(),
         applicantName:
             '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim(),
-        // For renewals the bike is not assigned yet — it will be assigned
-        // inside the dialog. Pass 'N/A' as placeholder.
-        bikeNumber: 'N/A',
         applicationType: 'renewal',
-        bikeInfo: null,
         userCampus: userCampus,
         userType: app['user_type'],
+        assignedBikeId: app['renewal_gso_bike_id'],
+        assignedBikeNumber: app['renewal_gso_bike_number'],
         onApproved: () async {
           await _fetchRenewalApplications();
           setState(() {});
@@ -221,11 +219,11 @@ class _ForReleasePageState extends State<ForReleasePage> {
       builder: (context) => _ReleaseDialog(
         applicationId: request['id'].toString(),
         applicantName: request['full_name'] ?? 'Unknown',
-        bikeNumber: 'TBD',
         applicationType: 'short_term',
-        bikeInfo: null,
         userCampus: userCampus,
         userType: request['user_type'],
+        assignedBikeId: request['assigned_bike_id'],
+        assignedBikeNumber: request['assigned_bike_number'],
         shortTermRequest: request,
         onApproved: () async {
           await _fetchShortTermRequests();
@@ -383,7 +381,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
                               .replaceAll('_', ' ')),
                       if (request['assigned_bike_number'] != null)
                         _detailRow('Assigned Bike',
-                            'Bike #${request['assigned_bike_number']}'),
+                            '${request['assigned_bike_number']}'),
                       if (request['gso_officer_name'] != null)
                         _detailRow(
                             'GSO Officer', request['gso_officer_name']),
@@ -628,7 +626,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
   if (selectedTab == 'new') {
     return Row(children: [
       _statusChip(
-          value: 'renewal_bike_returned',
+          value: 'for_release',
           label: 'Pending Release',
           icon: Icons.inventory_rounded,
           color: const Color(0xFFF57C00),
@@ -1831,7 +1829,7 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
                                     : Colors.grey[600],
                               ),
                               const SizedBox(width: 6),
-                              Text('Bike #${bike['bike_number']}',
+                              Text('${bike['bike_number']}',
                                   style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
@@ -1995,16 +1993,16 @@ class _BulkReleaseSectionState extends State<_BulkReleaseSection> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// UNIFIED RELEASE DIALOG
+// UNIFIED RELEASE DIALOG - MODIFIED TO DISPLAY ASSIGNED BIKE
 // ═══════════════════════════════════════════════════════════════════
 class _ReleaseDialog extends StatefulWidget {
   final String applicationId;
   final String applicantName;
-  final String bikeNumber;
   final String applicationType;
-  final Map<String, dynamic>? bikeInfo;
   final String? userCampus;
   final String? userType;
+  final int? assignedBikeId;
+  final String? assignedBikeNumber;
   final Map<String, dynamic>? shortTermRequest;
   final VoidCallback onApproved;
   final VoidCallback onRejected;
@@ -2012,11 +2010,11 @@ class _ReleaseDialog extends StatefulWidget {
   const _ReleaseDialog({
     required this.applicationId,
     required this.applicantName,
-    required this.bikeNumber,
     required this.applicationType,
-    required this.bikeInfo,
     required this.userCampus,
     this.userType,
+    this.assignedBikeId,
+    this.assignedBikeNumber,
     this.shortTermRequest,
     required this.onApproved,
     required this.onRejected,
@@ -2039,11 +2037,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  List<Map<String, dynamic>> _availableBikes = [];
-  Map<String, dynamic>? _selectedBike;
-  bool _loadingBikes = false;
-
-  // Bike condition checklist (shown for renewals)
+  // Bike condition checklist (shown for renewals - optional)
   bool _frameOk = true;
   bool _wheelsOk = true;
   bool _brakesOk = true;
@@ -2088,9 +2082,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       _frameOk && _wheelsOk && _brakesOk && _chaingearOk && _saddleOk && _lightsOk;
 
   bool get _canGenerateQr =>
-      _hasSignature &&
-      _officerNameController.text.trim().isNotEmpty &&
-      _selectedBike != null; // required for both new + renewal
+      _hasSignature && _officerNameController.text.trim().isNotEmpty;
 
   Color get _accentColor => _isShortTerm
       ? const Color(0xFFF57C00)
@@ -2102,7 +2094,6 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   void initState() {
     super.initState();
     _loadOfficerName();
-    _loadAvailableBikes();
 
     _signatureController.addListener(() {
       setState(() {
@@ -2129,26 +2120,6 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     if (_channel != null) supabase.removeChannel(_channel!);
     _pulseController.dispose();
     super.dispose();
-  }
-
-  // Bikes needed for all types (new, renewal, short-term)
-  Future<void> _loadAvailableBikes() async {
-    setState(() => _loadingBikes = true);
-    try {
-      final response = await supabase
-          .from('bikes')
-          .select('id, bike_number, campus, status')
-          .eq('status', 'available')
-          .filter('campus', 'ilike', widget.userCampus ?? '')
-          .order('bike_number');
-      setState(() {
-        _availableBikes = List<Map<String, dynamic>>.from(response);
-      });
-    } catch (e) {
-      debugPrint('Load bikes error: $e');
-    } finally {
-      setState(() => _loadingBikes = false);
-    }
   }
 
   Future<void> _loadOfficerName() async {
@@ -2225,39 +2196,32 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
 
       if (_isShortTerm) {
         // ── SHORT TERM ────────────────────────────────────────────
-        // Save GSO details + bike assignment + set status to 'approved'.
-        // Mobile app handles: bike → in_use, session insert, status → active.
+        // Bike is already assigned, just save GSO details + set status to 'approved'.
         await supabase.from('short_term_borrowing_requests').update({
           'gso_officer_name': _officerNameController.text.trim(),
           'gso_signature_url': signatureUrl,
           'reviewed_by': currentUserId,
           'reviewed_at': now,
           'updated_at': now,
-          'assigned_bike_id': _selectedBike!['id'],
-          'assigned_bike_number': _selectedBike!['bike_number'],
           'status': 'approved',
         }).eq('id', int.parse(widget.applicationId));
 
       } else if (_isRenewal) {
         // ── RENEWAL ───────────────────────────────────────────────
-        // Write to the four renewal_gso_* columns.
-        // Status stays as-is here; the mobile app sets it to 'active_renewal'
-        // after the borrower scans the QR and completes face verification.
+        // Bike is already assigned. Write to the renewal_gso_* columns.
         await supabase.from('borrowing_applications_version2').update({
-          'renewal_gso_bike_id': _selectedBike!['id'],
-          'renewal_gso_bike_number': _selectedBike!['bike_number'],
           'renewal_gso_checked_by': _officerNameController.text.trim(),
           'renewal_gso_signature_url': signatureUrl,
-          // Keep the bike in available status until the borrower confirms
-          // via QR scan — the app will flip it to in_use.
           'updated_at': now,
         }).eq('id', widget.applicationId);
 
-        // Mark the bike as reserved so it's not double-assigned.
-        await supabase.from('bikes').update({
-          'status': 'reserved',
-          'current_user_id': null,
-        }).eq('id', _selectedBike!['id']);
+        // Mark the bike as reserved
+        if (widget.assignedBikeId != null) {
+          await supabase.from('bikes').update({
+            'status': 'reserved',
+            'current_user_id': null,
+          }).eq('id', widget.assignedBikeId as Object);
+        }
 
       } else {
         // ── NEW APPLICATION ───────────────────────────────────────
@@ -2272,14 +2236,14 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           'gso_officer_name': _officerNameController.text.trim(),
           'gso_signature_url': signatureUrl,
           'gso_date_signed': now,
-          'assigned_bike_id': _selectedBike!['id'],
-          'assigned_bike_number': _selectedBike!['bike_number'],
         }).eq('id', widget.applicationId);
 
-        await supabase.from('bikes').update({
-          'status': 'in_use',
-          'current_user_id': borrowerUserId,
-        }).eq('id', _selectedBike!['id']);
+        if (widget.assignedBikeId != null) {
+          await supabase.from('bikes').update({
+            'status': 'in_use',
+            'current_user_id': borrowerUserId,
+          }).eq('id', widget.assignedBikeId as Object);
+        }
       }
 
       setState(() {
@@ -2378,17 +2342,17 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           }).eq('id', widget.applicationId);
 
           // If we already reserved the bike for a renewal, release it.
-          if (_isRenewal && _selectedBike != null) {
+          if (_isRenewal && widget.assignedBikeId != null) {
             await supabase
                 .from('bikes')
-                .update({'status': 'available'}).eq('id', _selectedBike!['id']);
+                .update({'status': 'available'}).eq('id', widget.assignedBikeId as Object);
           }
 
           // For new applications revert bike to available.
-          if (!_isRenewal && _selectedBike != null) {
+          if (!_isRenewal && widget.assignedBikeId != null) {
             await supabase
                 .from('bikes')
-                .update({'status': 'available'}).eq('id', _selectedBike!['id']);
+                .update({'status': 'available'}).eq('id', widget.assignedBikeId as Object);
           }
 
           if (mounted) {
@@ -2468,7 +2432,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                     : _isShortTerm
                         ? 'Short Term Release'
                         : _isRenewal
-                            ? 'Renewal Bike Assignment'
+                            ? 'Renewal Bike Release'
                             : 'GSO Release',
                 style: const TextStyle(
                     fontSize: 20,
@@ -2514,6 +2478,79 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Assigned bike display ────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _accentColor.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _accentColor.withOpacity(0.3), width: 1.5),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _accentColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.pedal_bike_rounded,
+                      color: _accentColor, size: 24),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Assigned Bike',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[600]),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.assignedBikeNumber != null
+                            ? '${widget.assignedBikeNumber}'
+                            : 'No bike assigned yet',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: _accentColor),
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.assignedBikeNumber != null)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF388E3C).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border:
+                          Border.all(color: const Color(0xFF388E3C), width: 1),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_circle_rounded,
+                            color: Color(0xFF388E3C), size: 14),
+                        SizedBox(width: 4),
+                        Text('Assigned',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF388E3C))),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
           // ── Short-term request summary ───────────────────────────
           if (_isShortTerm && widget.shortTermRequest != null) ...[
             Container(
@@ -2552,7 +2589,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             const SizedBox(height: 20),
           ],
 
-          // ── Renewal: condition checklist ─────────────────────────
+          // ── Renewal: condition checklist (optional) ──────────────
           if (_isRenewal) ...[
             Container(
               padding: const EdgeInsets.all(14),
@@ -2570,7 +2607,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                         color: Color(0xFF7B1FA2), size: 16),
                     const SizedBox(width: 6),
                     const Text(
-                      'Assigning new bike for next semester',
+                      'Releasing assigned bike for next semester',
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF7B1FA2),
@@ -2579,7 +2616,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   ]),
                   const SizedBox(height: 6),
                   Text(
-                    'This student has already passed bike inspection. Select a new bike below, provide your name and signature, then generate the QR for the student to scan.',
+                    'This student has already been assigned a bike. Provide your name and signature, then generate the QR for the student to scan.',
                     style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                   ),
                 ],
@@ -2587,13 +2624,13 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             ),
             const SizedBox(height: 20),
 
-            const Text('New Bike Condition Check (Optional)',
+            const Text('Bike Condition Check (Optional)',
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF1A1A1A))),
             const SizedBox(height: 4),
-            Text('Verify the new bike before assigning:',
+            Text('Verify the assigned bike condition:',
                 style: TextStyle(fontSize: 13, color: Colors.grey[600])),
             const SizedBox(height: 12),
             _conditionCheck('Frame & Body', 'No visible damage or cracks',
@@ -2623,7 +2660,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   SizedBox(width: 8),
                   Expanded(
                       child: Text(
-                          'One or more components may need attention. Consider choosing a different bike.',
+                          'Note: One or more components may need attention.',
                           style: TextStyle(
                               fontSize: 13, color: Color(0xFFD32F2F)))),
                 ]),
@@ -2633,56 +2670,6 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
             const Divider(),
             const SizedBox(height: 16),
           ],
-
-          // ── Bike selector (all types) ────────────────────────────
-          const Text('Assign Bike *',
-              style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1A1A1A))),
-          const SizedBox(height: 8),
-          _loadingBikes
-              ? const Center(child: CircularProgressIndicator())
-              : _availableBikes.isEmpty
-                  ? Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                          color: const Color(0xFFFFEBEE),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: const Color(0xFFD32F2F).withOpacity(0.3))),
-                      child: const Row(children: [
-                        Icon(Icons.warning_amber_rounded,
-                            color: Color(0xFFD32F2F), size: 18),
-                        SizedBox(width: 8),
-                        Text('No available bikes at the moment.',
-                            style: TextStyle(
-                                fontSize: 13, color: Color(0xFFD32F2F))),
-                      ]),
-                    )
-                  : DropdownButtonFormField<Map<String, dynamic>>(
-                      value: _selectedBike,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.pedal_bike_rounded),
-                        hintText: 'Select a bike to assign',
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 12),
-                      ),
-                      items: _availableBikes
-                          .map<DropdownMenuItem<Map<String, dynamic>>>((bike) {
-                        return DropdownMenuItem<Map<String, dynamic>>(
-                          value: bike,
-                          child: Text(
-                            'Bike #${bike['bike_number']} — ${bike['campus'] ?? 'N/A'}',
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (val) => setState(() => _selectedBike = val),
-                    ),
-          const SizedBox(height: 20),
 
           // ── GSO officer name ─────────────────────────────────────
           const Text('GSO Officer Name *',
@@ -2830,7 +2817,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
           const SizedBox(height: 28),
 
           // Assigned bike info banner
-          if (_selectedBike != null) ...[
+          if (widget.assignedBikeNumber != null) ...[
             Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -2843,7 +2830,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                 Icon(Icons.pedal_bike_rounded, color: _accentColor, size: 18),
                 const SizedBox(width: 10),
                 Text(
-                  'Assigned: Bike #${_selectedBike!['bike_number']}',
+                  'Assigned: ${widget.assignedBikeNumber}',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
