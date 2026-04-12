@@ -1,5 +1,7 @@
 // lib/main/gso/gso_dashboard.dart
 
+// ignore_for_file: unnecessary_cast
+
 import 'package:flutter/material.dart';
 import 'package:pedalhub_admin/widgets/app_header.dart';
 import 'package:pedalhub_admin/widgets/gso_drawer.dart';
@@ -183,6 +185,8 @@ class _GSODashboardState extends State<GSODashboard> {
       setState(() {
         totalBorrows = (newBorrows as List).length +
             (renewalBorrows as List).length;
+        // ignore: duplicate_ignore
+        // ignore: unnecessary_cast
         activeBorrows = (active as List).length;
         returnedBikes = (returned as List).length;
         terminatedCases = (terminated as List).length;

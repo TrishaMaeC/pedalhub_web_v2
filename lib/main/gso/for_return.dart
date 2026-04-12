@@ -1447,45 +1447,41 @@ class _RenewalBikeInspectionDialogState
   }
 
   Future<void> _submitInspection() async {
+  
   if (!_canSubmit) return;
-  setState(() => _isSubmitting = true);
+    setState(() => _isSubmitting = true);
 
-  try {
-    final applicationId = widget.application['id'];
-    final now = DateTime.now().toUtc().toIso8601String();
-    final currentUserId = supabase.auth.currentUser?.id;
+    try {
+      final applicationId = widget.application['id'];
+      final now = DateTime.now().toUtc().toIso8601String();
+      final currentUserId = supabase.auth.currentUser?.id;
 
-    if (_inspectionResult == 'no_damage') {
-      // NO DAMAGE PATH
-      if (_isStudent) {
-        // Student: No damage → renewal_pending_next_sem
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'renewal_pending_next_sem',
-          'renewal_gso_checked_by': _gsoNameController.text.trim(),
-          'updated_at': now,
-        }).eq('id', applicationId);
+     if (_inspectionResult == 'no_damage') {
+    // NO DAMAGE PATH
+    if (_isStudent) {
+      // Student: No damage → save GSO name only, then open QR dialog.
+      // Bike will be set to 'reserved' and status → 'renewal_pending_next_sem'
+      // only AFTER the student scans the INSPECTION- QR on the mobile app.
+      await supabase.from('borrowing_applications_version2').update({
+        'renewal_gso_checked_by': _gsoNameController.text.trim(),
+        'updated_at': now,
+        // status intentionally NOT changed here — mobile app handles it after QR scan
+      }).eq('id', applicationId);
 
-        // Return the bike to available
-        final bikeId = widget.application['renewal_gso_bike_id'] ??
-            widget.application['assigned_bike_id'];
-        if (bikeId != null) {
-          await supabase.from('bikes').update({
-            'status': 'available',
-            'current_user_id': null,
-          }).eq('id', bikeId);
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Student set to pending next semester. Bike returned.'),
-              backgroundColor: Colors.teal,
-            ),
-          );
-        }
-
-        widget.onComplete();
-        if (mounted) Navigator.pop(context);
+      if (mounted) {
+        Navigator.pop(context); // close inspection dialog first
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => _StudentRenewalNextSemDialog(
+            application: {
+              ...widget.application,
+              'renewal_gso_checked_by': _gsoNameController.text.trim(),
+            },
+            onComplete: widget.onComplete,
+          ),
+        );
+      }
 
       } else {
         // Personnel: No damage → open release dialog immediately
@@ -3728,6 +3724,543 @@ class _PersonnelRenewalReleaseDialogState
           ),
         ),
       ],
+    );
+  }
+}
+// ═══════════════════════════════════════════════════════════════════
+// STUDENT RENEWAL NEXT-SEM QR DIALOG
+// Shown after a clean bike inspection. GSO presents this QR for the
+// student to scan on the PedalHub app, which then sets:
+//   - borrowing_applications_version2.status → 'renewal_pending_next_sem'
+//   - bikes.status                           → 'reserved'
+// ═══════════════════════════════════════════════════════════════════
+class _StudentRenewalNextSemDialog extends StatefulWidget {
+  final Map<String, dynamic> application;
+  final VoidCallback onComplete;
+
+  const _StudentRenewalNextSemDialog({
+    required this.application,
+    required this.onComplete,
+  });
+
+  @override
+  State<_StudentRenewalNextSemDialog> createState() =>
+      _StudentRenewalNextSemDialogState();
+}
+
+class _StudentRenewalNextSemDialogState
+    extends State<_StudentRenewalNextSemDialog>
+    with SingleTickerProviderStateMixin {
+  final supabase = Supabase.instance.client;
+
+  bool _isConfirmed = false;
+
+  RealtimeChannel? _channel;
+  Timer? _pollTimer;
+
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  String get _applicationId => widget.application['id'].toString();
+
+  String get _applicantName =>
+      '${widget.application['first_name'] ?? ''} ${widget.application['last_name'] ?? ''}'
+          .trim();
+
+  String get _bikeNumber =>
+      widget.application['renewal_gso_bike_number'] ??
+      widget.application['assigned_bike_number'] ??
+      'N/A';
+
+  // Unique pattern so the mobile app can distinguish this scan from
+  // a return (RETURN_) or a personnel renewal (RENEWAL-)
+  String get _qrData => 'INSPECTION-$_applicationId';
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
+        CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut));
+
+    // Begin listening immediately — QR is visible as soon as dialog opens
+    _startRealtimeListener();
+    _startPollingFallback();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    if (_channel != null) supabase.removeChannel(_channel!);
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  // ── Realtime ────────────────────────────────────────────────────
+
+  void _startRealtimeListener() {
+    final channelName =
+        'student_next_sem_${_applicationId}_${DateTime.now().millisecondsSinceEpoch}';
+    _channel = supabase.channel(channelName,
+        opts: const RealtimeChannelConfig(ack: true));
+    _channel!
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'borrowing_applications_version2',
+          callback: (payload) {
+            final newStatus = payload.newRecord['status'];
+            final recordId = payload.newRecord['id'].toString();
+            if (recordId == _applicationId &&
+                newStatus == 'renewal_pending_next_sem' &&
+                !_isConfirmed &&
+                mounted) {
+              _onConfirmed();
+            }
+          },
+        )
+        .subscribe((status, [error]) {
+          if (status == RealtimeSubscribeStatus.closed && !_isConfirmed) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted && !_isConfirmed) _startRealtimeListener();
+            });
+          }
+        });
+  }
+
+  // ── Polling fallback (in case realtime drops) ────────────────────
+
+  void _startPollingFallback() {
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_isConfirmed) {
+        _pollTimer?.cancel();
+        return;
+      }
+      try {
+        final row = await supabase
+            .from('borrowing_applications_version2')
+            .select('status')
+            .eq('id', _applicationId)
+            .maybeSingle();
+        if (row != null &&
+            row['status'] == 'renewal_pending_next_sem' &&
+            mounted) {
+          _onConfirmed();
+        }
+      } catch (e) {
+        debugPrint('Poll error: $e');
+      }
+    });
+  }
+
+  void _onConfirmed() async {
+    if (_isConfirmed) return;
+    setState(() => _isConfirmed = true);
+    _pollTimer?.cancel();
+    _pulseController.stop();
+
+    // Sync the latest borrowing_session status to renewal_pending_next_sem
+    try {
+      // Try int first (most common), fallback to string
+      dynamic parsedId;
+      parsedId = int.tryParse(_applicationId) ?? _applicationId;
+
+      final sessionRes = await supabase
+          .from('borrowing_sessions')
+          .select('id')
+          .eq('application_id', parsedId)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      debugPrint('Session lookup for app $parsedId → $sessionRes');
+
+      if (sessionRes != null && sessionRes['id'] != null) {
+        await supabase.from('borrowing_sessions').update({
+          'status': 'renewal_pending_next_sem',
+          'end_time': DateTime.now().toUtc().toIso8601String(),
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        }).eq('id', sessionRes['id']);
+
+        debugPrint('borrowing_sessions updated → renewal_pending_next_sem');
+      }
+
+      // Set bike to reserved — student keeps this bike for next semester
+      final bikeId = widget.application['renewal_gso_bike_id'] ??
+          widget.application['assigned_bike_id'];
+      if (bikeId != null) {
+        await supabase.from('bikes').update({
+          'status': 'reserved',
+          'current_user_id': null,
+        }).eq('id', bikeId);
+        debugPrint('Bike $bikeId set to reserved');
+      } else {
+        debugPrint('No bike id found in application: ${widget.application.keys}');
+      } 
+    } catch (e) {
+      debugPrint('Error updating borrowing_session status: $e');
+    }
+
+    widget.onComplete();
+  }
+
+  // ── Build ────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 560,
+        constraints: const BoxConstraints(maxHeight: 660),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHeader(),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+            Expanded(child: _buildBody()),
+            const SizedBox(height: 20),
+            _buildActions(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Colors.teal, Color(0xFF26A69A)]),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            _isConfirmed
+                ? Icons.check_circle_rounded
+                : Icons.qr_code_2_rounded,
+            color: Colors.white,
+            size: 22,
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _isConfirmed ? 'Bike Reserved!' : 'Student Confirmation QR',
+                style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1A1A1A)),
+              ),
+              Text(
+                _isConfirmed
+                    ? 'Bike is now reserved for next semester'
+                    : 'Ask student to scan QR with the PedalHub app',
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+        ),
+        // QR data label badge
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.teal.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.teal),
+          ),
+          child: Text(
+            _qrData,
+            style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+                color: Colors.teal),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.close_rounded),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBody() {
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          // ── Status banner ──
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: _isConfirmed
+                ? _banner(
+                    key: const ValueKey('confirmed'),
+                    color: Colors.teal,
+                    bgColor: const Color(0xFFE0F2F1),
+                    icon: Icons.check_circle_rounded,
+                    message:
+                        'Student scanned QR! Bike reserved for next semester.',
+                  )
+                : _banner(
+                    key: const ValueKey('waiting'),
+                    color: Colors.teal,
+                    bgColor: const Color(0xFFE0F2F1),
+                    icon: null,
+                    message:
+                        'Waiting for student to scan QR on the PedalHub app…',
+                  ),
+          ),
+          const SizedBox(height: 16),
+
+          // ── Student / bike info row ──
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.teal.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.teal.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.person_rounded,
+                    color: Colors.teal, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(_applicantName,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.teal)),
+                ),
+                const Icon(Icons.pedal_bike_rounded,
+                    color: Colors.teal, size: 16),
+                const SizedBox(width: 8),
+                Text('Bike #$_bikeNumber',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.teal)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // ── QR code with pulse ──
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              final opacity =
+                  _isConfirmed ? 1.0 : _pulseAnimation.value;
+              return Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: Colors.teal.withOpacity(opacity),
+                      width: _isConfirmed ? 3 : 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.teal
+                          .withOpacity(0.2 * opacity),
+                      blurRadius: 24,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    QrImageView(
+                      data: _qrData,
+                      version: QrVersions.auto,
+                      size: 200,
+                      backgroundColor: Colors.white,
+                      eyeStyle: const QrEyeStyle(
+                          eyeShape: QrEyeShape.square,
+                          color: Colors.teal),
+                      dataModuleStyle: const QrDataModuleStyle(
+                          dataModuleShape: QrDataModuleShape.square,
+                          color: Color(0xFF1A1A1A)),
+                    ),
+                    if (_isConfirmed)
+                      Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.92),
+                            borderRadius: BorderRadius.circular(8)),
+                        child: const Center(
+                          child: Icon(Icons.check_circle_rounded,
+                              color: Colors.teal, size: 80),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // QR string label
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+                color: Colors.teal.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: Colors.teal.withOpacity(0.3))),
+            child: Text(
+              _qrData,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.5,
+                  color: Colors.teal),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // ── Steps (hidden once confirmed) ──
+          if (!_isConfirmed)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFF3F4F6),
+                  borderRadius: BorderRadius.circular(12)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Student completes on their phone:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[700])),
+                  const SizedBox(height: 10),
+                  _step('1', 'Open PedalHub app and scan QR'),
+                  _step('2', 'Complete face verification'),
+                  _step('3',
+                      'Confirm → bike set to reserved, status updates to renewal_pending_next_sem'),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActions() {
+    if (_isConfirmed) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.teal,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.check_circle_rounded, size: 18),
+            label: const Text('Done',
+                style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text('QR is active — waiting for student to scan…',
+            style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child:
+              Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+        ),
+      ],
+    );
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────
+
+  Widget _banner({
+    required Key key,
+    required Color color,
+    required Color bgColor,
+    required IconData? icon,
+    required String message,
+  }) {
+    return Container(
+      key: key,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.4))),
+      child: Row(children: [
+        icon != null
+            ? Icon(icon, color: color, size: 20)
+            : SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(color))),
+        const SizedBox(width: 12),
+        Expanded(
+            child: Text(message,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: color,
+                    fontWeight: FontWeight.w600))),
+      ]),
+    );
+  }
+
+  Widget _step(String number, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(children: [
+        Container(
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+              color: Colors.teal,
+              borderRadius: BorderRadius.circular(99)),
+          child: Center(
+              child: Text(number,
+                  style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white))),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+            child: Text(label,
+                style:
+                    TextStyle(fontSize: 12, color: Colors.grey[700]))),
+      ]),
     );
   }
 }

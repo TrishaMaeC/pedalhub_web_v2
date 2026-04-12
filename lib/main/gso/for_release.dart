@@ -186,7 +186,15 @@ class _ForReleasePageState extends State<ForReleasePage> {
   }
 
   // ── Release dialog for RENEWAL applications ───────────────────────
-  void _showRenewalReleaseDialog(Map<String, dynamic> app) {
+ void _showRenewalReleaseDialog(Map<String, dynamic> app) {
+    // For renewal_pending_next_sem students, the bike was reserved during
+    // the INSPECTION- QR scan in For Return. The bike id/number live in
+    // renewal_gso_bike_id / renewal_gso_bike_number set at that point.
+    final reservedBikeId = app['renewal_gso_bike_id'] ?? app['assigned_bike_id'];
+    final reservedBikeNumber = app['renewal_gso_bike_number'] ??
+        app['assigned_bike_number'] ??
+        app['bike_number'];
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -197,8 +205,10 @@ class _ForReleasePageState extends State<ForReleasePage> {
         applicationType: 'renewal',
         userCampus: userCampus,
         userType: app['user_type'],
-        assignedBikeId: app['renewal_gso_bike_id'],
-        assignedBikeNumber: app['renewal_gso_bike_number'],
+        assignedBikeId: reservedBikeId is int
+            ? reservedBikeId
+            : int.tryParse(reservedBikeId?.toString() ?? ''),
+        assignedBikeNumber: reservedBikeNumber?.toString(),
         onApproved: () async {
           await _fetchRenewalApplications();
           setState(() {});
@@ -946,11 +956,19 @@ class _ForReleasePageState extends State<ForReleasePage> {
     final lastName = app['last_name'] ?? '';
     final status = app['status'] ?? '';
 
-    // After release the bike number is stored in renewal_gso_bike_number.
-    final bikeNumber = app['renewal_gso_bike_number'] ?? 'Not assigned yet';
-
     final isPendingStudent = status == 'renewal_pending_next_sem';
     final isReleased = status == 'active_renewal';
+
+    // Bike was reserved during INSPECTION- QR scan (For Return page).
+    // It sits in renewal_gso_bike_number / renewal_gso_bike_id until
+    // this page releases it for next semester.
+    final bikeNumber = app['renewal_gso_bike_number'] ??
+        app['assigned_bike_number'] ??
+        app['bike_number'] ??
+        'Not assigned yet';
+    final isReserved = isPendingStudent &&
+        (app['renewal_gso_bike_number'] != null ||
+            app['assigned_bike_number'] != null);;
 
     Color statusColor;
     String statusLabel;
@@ -1014,12 +1032,32 @@ class _ForReleasePageState extends State<ForReleasePage> {
                   style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                 ),
                 const SizedBox(height: 2),
-                Row(children: [
+               Row(children: [
                   Icon(Icons.pedal_bike_rounded,
                       size: 14, color: Colors.grey[500]),
                   const SizedBox(width: 4),
                   Text('Bike: $bikeNumber',
                       style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                  if (isReserved) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                            color: Colors.teal.withOpacity(0.5)),
+                      ),
+                      child: const Text(
+                        'Reserved',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.teal),
+                      ),
+                    ),
+                  ],
                 ]),
                 const SizedBox(height: 10),
                 _statusBadge(statusLabel, statusColor),
@@ -2055,6 +2093,8 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
   Uint8List? _uploadedImageBytes;
   String? _uploadedFileName;
   final TextEditingController _officerNameController = TextEditingController();
+  String? _pendingSignatureUrl;
+  String? _pendingOfficerName;
 
   bool get _isRenewal => widget.applicationType == 'renewal';
   bool get _isShortTerm => widget.applicationType == 'short_term';
@@ -2173,95 +2213,46 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
 
   // ── Main action: save GSO data + show QR ─────────────────────────
   Future<void> _generateQr() async {
-    if (!_canGenerateQr) return;
-    setState(() => _isSubmitting = true);
+  if (!_canGenerateQr) return;
+  setState(() => _isSubmitting = true);
 
-    try {
-      Uint8List? sigBytes;
-      String fileName;
-      if (_isDrawMode) {
-        sigBytes = await _signatureController.toPngBytes();
-        if (sigBytes == null) throw Exception('Failed to export signature');
-        fileName = 'drawn_signature.png';
-      } else {
-        sigBytes = _uploadedImageBytes!;
-        fileName = _uploadedFileName ?? 'uploaded_signature.png';
-      }
-
-      final signatureUrl = await _uploadSignature(sigBytes, fileName);
-      if (signatureUrl == null) throw Exception('Signature upload failed');
-
-      final now = DateTime.now().toUtc().toIso8601String();
-      final currentUserId = supabase.auth.currentUser?.id;
-
-      if (_isShortTerm) {
-        // ── SHORT TERM ────────────────────────────────────────────
-        // Bike is already assigned, just save GSO details + set status to 'approved'.
-        await supabase.from('short_term_borrowing_requests').update({
-          'gso_officer_name': _officerNameController.text.trim(),
-          'gso_signature_url': signatureUrl,
-          'reviewed_by': currentUserId,
-          'reviewed_at': now,
-          'updated_at': now,
-          'status': 'approved',
-        }).eq('id', int.parse(widget.applicationId));
-
-      } else if (_isRenewal) {
-        // ── RENEWAL ───────────────────────────────────────────────
-        // Bike is already assigned. Write to the renewal_gso_* columns.
-        await supabase.from('borrowing_applications_version2').update({
-          'renewal_gso_checked_by': _officerNameController.text.trim(),
-          'renewal_gso_signature_url': signatureUrl,
-          'updated_at': now,
-        }).eq('id', widget.applicationId);
-
-        // Mark the bike as reserved
-        if (widget.assignedBikeId != null) {
-          await supabase.from('bikes').update({
-            'status': 'reserved',
-            'current_user_id': null,
-          }).eq('id', widget.assignedBikeId as Object);
-        }
-
-      } else {
-        // ── NEW APPLICATION ───────────────────────────────────────
-        final application = await supabase
-            .from('borrowing_applications_version2')
-            .select('user_id')
-            .eq('id', widget.applicationId)
-            .single();
-        final borrowerUserId = application['user_id'];
-
-        await supabase.from('borrowing_applications_version2').update({
-          'gso_officer_name': _officerNameController.text.trim(),
-          'gso_signature_url': signatureUrl,
-          'gso_date_signed': now,
-        }).eq('id', widget.applicationId);
-
-        if (widget.assignedBikeId != null) {
-          await supabase.from('bikes').update({
-            'status': 'in_use',
-            'current_user_id': borrowerUserId,
-          }).eq('id', widget.assignedBikeId as Object);
-        }
-      }
-
-      setState(() {
-        _showingQr = true;
-        _isSubmitting = false;
-      });
-
-      _startRealtimeListener();
-      _startPollingFallback();
-    } catch (e) {
-      debugPrint('Generate QR error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error: $e'), backgroundColor: Colors.red));
-      }
-      setState(() => _isSubmitting = false);
+  try {
+    Uint8List? sigBytes;
+    String fileName;
+    if (_isDrawMode) {
+      sigBytes = await _signatureController.toPngBytes();
+      if (sigBytes == null) throw Exception('Failed to export signature');
+      fileName = 'drawn_signature.png';
+    } else {
+      sigBytes = _uploadedImageBytes!;
+      fileName = _uploadedFileName ?? 'uploaded_signature.png';
     }
+
+    // Upload signature and store URL + officer name in memory only
+    final signatureUrl = await _uploadSignature(sigBytes, fileName);
+    if (signatureUrl == null) throw Exception('Signature upload failed');
+
+    // Store for later use in _onReleaseDetected
+    _pendingSignatureUrl = signatureUrl;
+    _pendingOfficerName = _officerNameController.text.trim();
+
+    setState(() {
+      _showingQr = true;
+      _isSubmitting = false;
+    });
+
+    _startRealtimeListener();
+    _startPollingFallback();
+  } catch (e) {
+    debugPrint('Generate QR error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+    setState(() => _isSubmitting = false);
   }
+}
 
   void _startRealtimeListener() {
     final channelName =
@@ -2318,13 +2309,77 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
     });
   }
 
-  void _onReleaseDetected() {
-    if (_isReleased) return;
-    setState(() => _isReleased = true);
-    _pollTimer?.cancel();
-    _pulseController.stop();
-    widget.onApproved();
+  void _onReleaseDetected() async {
+  if (_isReleased) return;
+  setState(() => _isReleased = true);
+  _pollTimer?.cancel();
+  _pulseController.stop();
+
+  try {
+    final now = DateTime.now().toUtc().toIso8601String();
+    final currentUserId = supabase.auth.currentUser?.id;
+
+    if (_isShortTerm) {
+      await supabase.from('short_term_borrowing_requests').update({
+        'gso_officer_name': _pendingOfficerName,
+        'gso_signature_url': _pendingSignatureUrl,
+        'reviewed_by': currentUserId,
+        'reviewed_at': now,
+        'updated_at': now,
+      }).eq('id', int.parse(widget.applicationId));
+
+    } else if (_isRenewal) {
+      // Fetch the borrower's user_id so we can assign it to the bike
+      final application = await supabase
+          .from('borrowing_applications_version2')
+          .select('user_id')
+          .eq('id', widget.applicationId)
+          .single();
+      final borrowerUserId = application['user_id'];
+
+      await supabase.from('borrowing_applications_version2').update({
+        'renewal_gso_checked_by': _pendingOfficerName,
+        'renewal_gso_signature_url': _pendingSignatureUrl,
+        'updated_at': now,
+      }).eq('id', widget.applicationId);
+
+      // Bike was sitting as 'reserved' since the INSPECTION- QR scan.
+      // Now that the student has scanned RENEWAL- QR, promote it to in_use.
+      if (widget.assignedBikeId != null) {
+        await supabase.from('bikes').update({
+          'status': 'in_use',
+          'current_user_id': borrowerUserId,
+        }).eq('id', widget.assignedBikeId as Object);
+      }
+
+    } else {
+      // New application
+      final application = await supabase
+          .from('borrowing_applications_version2')
+          .select('user_id')
+          .eq('id', widget.applicationId)
+          .single();
+      final borrowerUserId = application['user_id'];
+
+      await supabase.from('borrowing_applications_version2').update({
+        'gso_officer_name': _pendingOfficerName,
+        'gso_signature_url': _pendingSignatureUrl,
+        'gso_date_signed': now,
+      }).eq('id', widget.applicationId);
+
+      if (widget.assignedBikeId != null) {
+        await supabase.from('bikes').update({
+          'status': 'in_use',
+          'current_user_id': borrowerUserId,
+        }).eq('id', widget.assignedBikeId as Object);
+      }
+    }
+  } catch (e) {
+    debugPrint('Error saving release data: $e');
   }
+
+  widget.onApproved();
+}
 
   void _reject() {
     Navigator.pop(context);
@@ -2616,7 +2671,7 @@ class _ReleaseDialogState extends State<_ReleaseDialog>
                   ]),
                   const SizedBox(height: 6),
                   Text(
-                    'This student has already been assigned a bike. Provide your name and signature, then generate the QR for the student to scan.',
+                    'This student\'s bike was reserved after last semester\'s inspection. Provide your name and signature, then generate the QR for the student to scan and activate their bike for the new semester.',
                     style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                   ),
                 ],

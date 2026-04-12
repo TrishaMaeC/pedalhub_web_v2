@@ -1591,14 +1591,14 @@ class _CertifyDialogState extends State<_CertifyDialog> {
   }
 
   Future<String?> _uploadSignature(Uint8List bytes, String fileName) async {
-    try {
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final userId    = supabase.auth.currentUser?.id ?? 'unknown';
-      final path      = 'hrmo_signatures/${userId}_${timestamp}_$fileName';
-      await supabase.storage.from('signatures').uploadBinary(path, bytes);
-      return supabase.storage.from('signatures').getPublicUrl(path);
-    } catch (e) { debugPrint('Upload error: $e'); return null; }
-  }
+      try {
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final userId    = supabase.auth.currentUser?.id ?? 'unknown';
+        final path      = 'hrmo_signatures/${userId}_${timestamp}_$fileName';
+        await supabase.storage.from('signatures').uploadBinary(path, bytes);
+        return supabase.storage.from('signatures').getPublicUrl(path);
+      } catch (e) { debugPrint('Upload error: $e'); return null; }
+    }
 
   Future<void> _approve() async {
     if (!_canApprove) return;
@@ -1618,33 +1618,69 @@ class _CertifyDialogState extends State<_CertifyDialog> {
       final signatureUrl = await _uploadSignature(sigBytes!, fileName);
       if (signatureUrl == null) throw Exception('Signature upload failed');
 
-      if (widget.tableSource == _AppTableSource.renewal) {
-        // ── Renewal: borrowing_applications_version2 with renewal_ prefix
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'renewal_hrmo_approved',
-          'renewal_hrmo_osd_signature_url': signatureUrl,
-          'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
-        }).eq('id', widget.applicationId);
-      } else {
-        // ── New Application: borrowing_applications_version2 without renewal_ prefix
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'hrmo_approved',
-          'hrmo_osd_signature': signatureUrl,
-          'hrmo_osd_name': _signatoryNameController.text.trim(),
-          'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
-        }).eq('id', widget.applicationId);
-      }
+      // Check if has disciplinary action - if true, REJECT instead
+      if (_hasDisciplinaryAction == true) {
+        // REJECT the application
+        if (widget.tableSource == _AppTableSource.renewal) {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_hrmo_rejected',
+            'renewal_hrmo_osd_rejection_reason': 'Has disciplinary actions with final judgement relating to government properties',
+            'renewal_hrmo_osd_signature_url': signatureUrl,
+            'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
+          }).eq('id', widget.applicationId);
+        } else {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'hrmo_rejected',
+            'rejection_reason': 'Has disciplinary actions with final judgement relating to government properties',
+            'hrmo_osd_signature': signatureUrl,
+            'hrmo_osd_name': _signatoryNameController.text.trim(),
+            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
+          }).eq('id', widget.applicationId);
+        }
 
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Application certified and approved.'), backgroundColor: Color(0xFF388E3C)),
-        );
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Application rejected due to disciplinary actions.'),
+              backgroundColor: Color(0xFFD32F2F),
+            ),
+          );
+        }
+      } else {
+        // APPROVE the application (existing code)
+        if (widget.tableSource == _AppTableSource.renewal) {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_hrmo_approved',
+            'renewal_hrmo_osd_signature_url': signatureUrl,
+            'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
+          }).eq('id', widget.applicationId);
+        } else {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'hrmo_approved',
+            'hrmo_osd_signature': signatureUrl,
+            'hrmo_osd_name': _signatoryNameController.text.trim(),
+            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
+          }).eq('id', widget.applicationId);
+        }
+
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Application certified and approved.'),
+              backgroundColor: Color(0xFF388E3C),
+            ),
+          );
+        }
       }
+      
       widget.onApproved();
     } catch (e) {
       debugPrint('Certify error: $e');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -1772,21 +1808,41 @@ class _CertifyDialogState extends State<_CertifyDialog> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(onPressed: () => Navigator.pop(context), child: Text('Cancel', style: TextStyle(color: Colors.grey[600]))),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+              ),
               const SizedBox(width: 12),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _canApprove ? const Color(0xFF388E3C) : Colors.grey[300],
+                  backgroundColor: _canApprove 
+                      ? (_hasDisciplinaryAction == true 
+                          ? const Color(0xFFD32F2F)  // Red for reject
+                          : const Color(0xFF388E3C)) // Green for approve
+                      : Colors.grey[300],
                   foregroundColor: _canApprove ? Colors.white : Colors.grey[500],
                   padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 onPressed: _canApprove && !_isSubmitting ? _approve : null,
                 icon: _isSubmitting
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.verified_rounded, size: 18),
-                label: Text(_isSubmitting ? 'Certifying...' : 'Approve',
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : Icon(
+                        _hasDisciplinaryAction == true 
+                            ? Icons.cancel_rounded 
+                            : Icons.verified_rounded,
+                        size: 18,
+                      ),
+                label: Text(
+                  _isSubmitting 
+                      ? 'Processing...' 
+                      : (_hasDisciplinaryAction == true ? 'Reject' : 'Approve'),
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                ),
               ),
             ],
           ),

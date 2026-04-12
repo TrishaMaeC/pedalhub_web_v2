@@ -1,5 +1,7 @@
 // lib/pages/health_evaluation_page.dart
 
+// ignore_for_file: unused_field
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pedalhub_admin/widgets/app_header.dart';

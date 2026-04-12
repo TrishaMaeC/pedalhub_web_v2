@@ -59,6 +59,12 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     'MABINI',
   ];
 
+  bool get _isSemesterExpired {
+    if (_semester == null) return false;
+    final endDate = DateTime.parse(_semester!['end_date']);
+    return DateTime.now().isAfter(endDate);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -182,16 +188,16 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
 
   void _showSemesterDialog() {
     final labelController = TextEditingController(
-      text: _semester?['label'] ?? '',
+      text: _isSemesterExpired ? '' : (_semester?['label'] ?? ''),
     );
     final academicYearController = TextEditingController(
-      text: _semester?['academic_year'] ?? '',
+      text: _isSemesterExpired ? '' : (_semester?['academic_year'] ?? ''),
     );
 
-    DateTime? startDate = _semester?['start_date'] != null
+    DateTime? startDate = (!_isSemesterExpired && _semester?['start_date'] != null)
         ? DateTime.parse(_semester!['start_date'])
         : null;
-    DateTime? endDate = _semester?['end_date'] != null
+    DateTime? endDate = (!_isSemesterExpired && _semester?['end_date'] != null)
         ? DateTime.parse(_semester!['end_date'])
         : null;
 
@@ -227,7 +233,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                     final picked = await showDatePicker(
                       context: context,
                       initialDate: startDate ?? DateTime.now(),
-                      firstDate: DateTime(2020),
+                      firstDate: DateTime.now(), 
                       lastDate: DateTime(2100),
                     );
                     if (picked != null) {
@@ -256,7 +262,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                     final picked = await showDatePicker(
                       context: context,
                       initialDate: endDate ?? (startDate ?? DateTime.now()),
-                      firstDate: DateTime(2020),
+                      firstDate: DateTime.now(),
                       lastDate: DateTime(2100),
                     );
                     if (picked != null) {
@@ -713,16 +719,51 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                       TextButton.icon(
                         onPressed: _showSemesterDialog,
                         icon: Icon(
-                          _semester == null ? Icons.add : Icons.edit,
+                          _semester == null
+                              ? Icons.add
+                              : _isSemesterExpired
+                                  ? Icons.add_circle_outline
+                                  : Icons.edit,
                           size: 18,
                         ),
-                        label: Text(_semester == null ? 'Set' : 'Edit'),
+                        label: Text(
+                          _semester == null
+                              ? 'Set'
+                              : _isSemesterExpired
+                                  ? 'Set New'
+                                  : 'Edit',
+                        ),
                         style: TextButton.styleFrom(
-                          foregroundColor: const Color(0xFFD32F2F),
+                          foregroundColor: _isSemesterExpired
+                              ? Colors.orange
+                              : const Color(0xFFD32F2F),
                         ),
                       ),
                     ],
                   ),
+                  if (_isSemesterExpired)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.orange.shade300),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              color: Colors.orange.shade700, size: 16),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Semester has ended. Please set a new semester.',
+                              style: TextStyle(fontSize: 12, color: Colors.deepOrange),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   const Divider(),
                   _isSemesterLoading
                       ? const Center(child: CircularProgressIndicator())

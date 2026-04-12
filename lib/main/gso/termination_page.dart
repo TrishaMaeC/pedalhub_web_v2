@@ -602,6 +602,7 @@ class _TerminationPageState extends State<TerminationPage> {
       {required String tab}) {
     final isPending = tab == 'pending';
     final isReturned = tab == 'returned_terminated';
+    // ignore: unused_local_variable
     final isForwarded = tab == 'forwarded';
     final isRenewal = lib['renewal_application_id'] != null;
 

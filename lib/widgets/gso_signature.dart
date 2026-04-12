@@ -1,3 +1,5 @@
+// ignore_for_file: unnecessary_null_comparison
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:signature/signature.dart';
@@ -106,6 +108,7 @@ class _GsoReleaseSignatureDialogState extends State<GsoReleaseSignatureDialog> {
     if (mounted) {
       _availableBikes = response != null
           ? List<Map<String, dynamic>>.from(response)
+          // ignore: dead_code
           : [];
 
       _loadingBikes = false;
