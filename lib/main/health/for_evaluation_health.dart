@@ -675,68 +675,86 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
   // On rejection → status stays renewal_medical_rejected (permanent).
   // ─────────────────────────────────────────────
   void _showRemarksDialog(BorrowingApplicationV2Model app, bool approve) {
-    final remarksController = TextEditingController();
+  final remarksController = TextEditingController();
+  
+  // ✅ CORRECT: Check if it's a NEW application reassessment
+  final isNewAppReassessment = app.reassessmentRequested == true;
+  final isRenewalReassessment = app.status == 'renewal_medical_reassessment';
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(approve ? 'Approve Re-assessment' : 'Reject Re-assessment'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('${app.firstName} ${app.lastName}'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: remarksController,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: "Remarks (optional)",
-                border: OutlineInputBorder(),
-              ),
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(approve ? 'Approve Re-assessment' : 'Reject Re-assessment'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('${app.firstName} ${app.lastName}'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: remarksController,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: "Remarks (optional)",
+              border: OutlineInputBorder(),
             ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: approve ? Colors.green : Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () async {
-              Navigator.pop(context);
-
-              // ── DB-aligned column names ──────────────────────────────────
-              // Approved  → renewal_medical_reassessment_approved
-              //             (borrower walks in directly, no scheduling needed)
-              // Rejected  → renewal_medical_rejected (permanent; no more chances)
-              final newStatus = approve
-                  ? 'renewal_medical_reassessment_approved'
-                  : 'renewal_medical_rejected';
-
-              await supabase
-                  .from('borrowing_applications_version2')
-                  .update({
-                    // Correct renewal-specific column names
-                    "renewal_reassessment_remarks": remarksController.text,
-                    "renewal_reassessment_reviewed_at":
-                        DateTime.now().toIso8601String(),
-                    "renewal_reassessment_approved": approve,
-                    "status": newStatus,
-                  })
-                  .eq("id", app.id);
-
-              fetchApplications();
-            },
-            child: Text(approve ? "Approve" : "Reject"),
           ),
         ],
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("Cancel"),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: approve ? Colors.green : Colors.red,
+            foregroundColor: Colors.white,
+          ),
+          onPressed: () async {
+            Navigator.pop(context);
+
+            String newStatus;
+            Map<String, dynamic> updateData = {};
+
+            if (isRenewalReassessment) {
+              // ── RENEWAL REASSESSMENT ──
+              newStatus = approve
+                  ? 'renewal_medical_reassessment_approved'
+                  : 'renewal_medical_rejected';
+              
+              updateData = {
+                "renewal_reassessment_remarks": remarksController.text,
+                "renewal_reassessment_reviewed_at": DateTime.now().toIso8601String(),
+                "renewal_reassessment_approved": approve,
+                "status": newStatus,
+              };
+            } else if (isNewAppReassessment) {
+              // ── NEW APPLICATION REASSESSMENT ──
+              newStatus = approve
+                  ? 'for_reassessment'  // Approved → ready for re-exam
+                  : 'health_rejected_final';  // Rejected → final rejection
+              
+              updateData = {
+                "reassessment_remarks": remarksController.text,
+                "reassessment_reviewed_at": DateTime.now().toIso8601String(),
+                "reassessment_approved": approve,
+                "status": newStatus,
+              };
+            }
+
+            await supabase
+                .from('borrowing_applications_version2')
+                .update(updateData)
+                .eq("id", app.id);
+
+            fetchApplications();
+          },
+          child: Text(approve ? "Approve" : "Reject"),
+        ),
+      ],
+    ),
+  );
+}
 
   // ─────────────────────────────────────────────
   // FETCH APPLICATIONS
