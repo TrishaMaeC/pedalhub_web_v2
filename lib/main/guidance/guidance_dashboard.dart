@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:pedalhub_admin/widgets/app_header.dart';
 import 'package:pedalhub_admin/login_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:pedalhub_admin/widgets/rejection_reason_dialog.dart';
 import 'package:signature/signature.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:typed_data';
@@ -21,15 +20,11 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     with SingleTickerProviderStateMixin {
   final supabase = Supabase.instance.client;
 
-  // 3 tabs: Renewal Approval | New Applications | Disciplinary Cases
   late TabController _mainTabController;
 
   bool isLoading = true;
 
   // ── Renewal tab
-  // Pending  : renewal_applied
-  // Approved : renewal_osd_approved
-  // Rejected : renewal_osd_rejected
   String selectedStatus = 'renewal_applied';
   List<Map<String, dynamic>> applications = [];
   int pendingCount = 0;
@@ -37,30 +32,19 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   int rejectedCount = 0;
 
   // ── New Applications tab
-  // Pending  : pending_application
-  // Approved : osd_approved   (shared column with HRMO)
-  // Rejected : osd_rejected
   String selectedNewAppStatus = 'pending_application';
   List<Map<String, dynamic>> newApplications = [];
   int newPendingCount = 0;
   int newApprovedCount = 0;
   int newRejectedCount = 0;
 
-  // ── Discipline tab (students only — sr_code not null)
-  String selectedDisciplineTab = 'open';
+  // ── Discipline tab
+  String selectedDisciplineTab = 'forwarded_discipline';
   List<Map<String, dynamic>> disciplineCases = [];
   int openCasesCount = 0;
   int resolvedCasesCount = 0;
 
   String? userCampus;
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  /// Students: sr_code has a value
-  bool _isStudent(Map<String, dynamic> record) {
-    final srCode = record['sr_code'];
-    return srCode != null && srCode.toString().trim().isNotEmpty;
-  }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -125,78 +109,94 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   }
 
   Future<void> _loadMetrics() async {
-    // ── Renewal metrics (students, borrowing_applications_version2)
-    final pending = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'renewal_applied')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+    try {
+      // ── 1. Renewal metrics
+      final pending = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('status', 'renewal_applied')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    final approved = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'renewal_osd_approved')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+      final approved = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('is_hrmo_osd_approved', true)
+          .eq('status', 'renewal_osd_approved')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    final rejected = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'renewal_osd_rejected')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+      final rejected = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('status', 'renewal_osd_rejected')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    // ── New Applications metrics (students, borrowing_applications_version2)
-    final newPending = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'pending_application')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+      // ── 2. New Applications metrics
+      final newPending = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('status', 'pending_application')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    final newApproved = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'osd_approved')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+      final newApproved = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('is_hrmo_osd_approved', true)
+          .eq('status', 'osd_approved')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    final newRejected = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .eq('status', 'osd_rejected')
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!);
+      final newRejected = await supabase
+          .from('borrowing_applications_version2')
+          .select('id')
+          .eq('status', 'osd_rejected')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    // ── Discipline metrics (students only — sr_code not null)
-    final openRaw = await supabase
-        .from('student_discipline')
-        .select('id, sr_code')
-        .eq('status', 'open')
-        .ilike('campus', userCampus!);
+      // ── 3. Discipline metrics — from liabilities_version2
+      final openRaw = await supabase
+          .from('liabilities_version2')
+          .select('id')
+          .eq('penalty_status', 'forwarded_discipline')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    final resolvedRaw = await supabase
-        .from('student_discipline')
-        .select('id, sr_code')
-        .eq('status', 'resolved')
-        .ilike('campus', userCampus!);
+      final resolvedRaw = await supabase
+          .from('liabilities_version2')
+          .select('id')
+          .inFilter('final_penalty_status', ['suspended_1_semester', 'terminated'])
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .count(CountOption.exact);
 
-    setState(() {
-      pendingCount  = (pending as List).length;
-      approvedCount = (approved as List).length;
-      rejectedCount = (rejected as List).length;
+      setState(() {
+        pendingCount = pending.count;
+        approvedCount = approved.count;
+        rejectedCount = rejected.count;
 
-      newPendingCount  = (newPending as List).length;
-      newApprovedCount = (newApproved as List).length;
-      newRejectedCount = (newRejected as List).length;
+        newPendingCount = newPending.count;
+        newApprovedCount = newApproved.count;
+        newRejectedCount = newRejected.count;
 
-      openCasesCount     = (openRaw as List).where((c) => _isStudent(c)).length;
-      resolvedCasesCount = (resolvedRaw as List).where((c) => _isStudent(c)).length;
-    });
+        openCasesCount = openRaw.count;
+        resolvedCasesCount = resolvedRaw.count;
+      });
+    } catch (e) {
+      debugPrint('Error loading metrics: $e');
+    }
   }
 
-  // ── Renewal applications (students) ────────────────────────────────────────
+  // ── Renewal applications ───────────────────────────────────────────────────
 
   Future<void> _fetchApplications() async {
     if (userCampus == null) return;
@@ -210,7 +210,7 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     setState(() => applications = List<Map<String, dynamic>>.from(response));
   }
 
-  // ── New Applications (students) ────────────────────────────────────────────
+  // ── New Applications ───────────────────────────────────────────────────────
 
   Future<void> _fetchNewApplications() async {
     if (userCampus == null) return;
@@ -224,20 +224,33 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     setState(() => newApplications = List<Map<String, dynamic>>.from(response));
   }
 
-  // ── Discipline cases (students only) ──────────────────────────────────────
+  // ── Discipline cases — from liabilities_version2 ──────────────────────────
 
   Future<void> _fetchDisciplineCases() async {
     if (userCampus == null) return;
     try {
-      final response = await supabase
-          .from('student_discipline')
-          .select('*')
-          .eq('status', selectedDisciplineTab)
-          .ilike('campus', userCampus!)
-          .order('forwarded_at', ascending: false);
-      final list     = List<Map<String, dynamic>>.from(response);
-      final filtered = list.where((c) => _isStudent(c)).toList();
-      setState(() => disciplineCases = filtered);
+      final isOpen = selectedDisciplineTab == 'forwarded_discipline';
+      late final List response;
+
+      if (isOpen) {
+        response = await supabase
+            .from('liabilities_version2')
+            .select('*')
+            .eq('penalty_status', 'forwarded_discipline')
+            .eq('user_type', 'student')
+            .ilike('campus', userCampus!)
+            .order('forwarded_at', ascending: false);
+      } else {
+        response = await supabase
+            .from('liabilities_version2')
+            .select('*')
+            .inFilter('final_penalty_status', ['suspended_1_semester', 'terminated'])
+            .eq('user_type', 'student')
+            .ilike('campus', userCampus!)
+            .order('final_penalty_set_at', ascending: false);
+      }
+
+      setState(() => disciplineCases = List<Map<String, dynamic>>.from(response));
     } catch (e) {
       debugPrint('Fetch discipline cases error: $e');
     }
@@ -286,75 +299,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         onApproved: _loadAll,
         tableSource: _AppTableSource.newApplication,
       ),
-    );
-  }
-
-  void _showRejectRenewalDialog(Map<String, dynamic> app) {
-    final applicantName =
-        '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim();
-    RejectionReasonDialog.show(
-      context: context,
-      applicantName: applicantName,
-      onReject: (reason) async {
-        try {
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'renewal_osd_rejected',
-            'renewal_hrmo_osd_rejection_reason': reason, // shared column
-          }).eq('id', app['id']);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Renewal application rejected.'),
-                  backgroundColor: Colors.orange),
-            );
-          }
-          await _loadAll();
-        } catch (e) {
-          debugPrint('Reject renewal error: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text('Error rejecting: $e'),
-                  backgroundColor: Colors.red),
-            );
-          }
-        }
-      },
-    );
-  }
-
-  void _showRejectNewAppDialog(Map<String, dynamic> app) {
-    final applicantName =
-        '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim();
-    RejectionReasonDialog.show(
-      context: context,
-      applicantName: applicantName,
-      onReject: (reason) async {
-        try {
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'osd_rejected',
-            'rejection_reason': reason,
-            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
-          }).eq('id', app['id']);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Application rejected.'),
-                  backgroundColor: Colors.orange),
-            );
-          }
-          await _loadAll();
-        } catch (e) {
-          debugPrint('Reject new app error: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text('Error rejecting: $e'),
-                  backgroundColor: Colors.red),
-            );
-          }
-        }
-      },
     );
   }
 
@@ -429,12 +373,9 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
               labelStyle:
                   const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
               tabs: [
-                // Tab 1 – Renewal
                 const Tab(
                     icon: Icon(Icons.how_to_reg_rounded),
                     text: 'Renewal Approval'),
-
-                // Tab 2 – New Applications
                 Tab(
                   icon: Stack(
                     clipBehavior: Clip.none,
@@ -460,8 +401,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   ),
                   text: 'New Applications',
                 ),
-
-                // Tab 3 – Disciplinary Cases
                 Tab(
                   icon: Stack(
                     clipBehavior: Clip.none,
@@ -546,8 +485,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   colors: [Color(0xFFD32F2F), Color(0xFFE57373)]),
               borderRadius: BorderRadius.circular(12),
             ),
-            child:
-                const Icon(Icons.how_to_reg_rounded, color: Colors.white, size: 28),
+            child: const Icon(Icons.how_to_reg_rounded,
+                color: Colors.white, size: 28),
           ),
           const SizedBox(width: 16),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -653,15 +592,15 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   }
 
   Widget _renewalCard(Map<String, dynamic> app) {
-    final firstName     = app['first_name'] ?? '';
-    final lastName      = app['last_name'] ?? '';
-    final idNo          = app['id_no'] ?? 'N/A';
+    final firstName = app['first_name'] ?? '';
+    final lastName = app['last_name'] ?? '';
+    final idNo = app['id_no'] ?? 'N/A';
     final collegeOffice = app['college_office'] ?? 'N/A';
     final controlNumber = app['control_number'] ?? 'N/A';
-    final renewalCount  = app['renewal_count'] ?? 0;
-    final status        = app['status'] ?? '';
-    final isPending     = status == 'renewal_applied';
-    final isApproved    = status == 'renewal_osd_approved';
+    final renewalCount = app['renewal_count'] ?? 0;
+    final status = app['status'] ?? '';
+    final isPending = status == 'renewal_applied';
+    final isApproved = status == 'renewal_osd_approved';
 
     final Color statusColor = isPending
         ? const Color(0xFFF57C00)
@@ -713,7 +652,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         ),
         const SizedBox(width: 16),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Text('$firstName $lastName',
                   style: const TextStyle(
@@ -749,11 +689,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   icon: Icons.verified_rounded,
                   color: const Color(0xFF388E3C),
                   onPressed: () => _showCertifyRenewalDialog(app)),
-              _actionButton(
-                  label: 'Reject',
-                  icon: Icons.cancel_rounded,
-                  color: const Color(0xFFD32F2F),
-                  onPressed: () => _showRejectRenewalDialog(app)),
             ],
           ),
       ]),
@@ -903,14 +838,14 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   }
 
   Widget _newAppCard(Map<String, dynamic> app) {
-    final firstName     = app['first_name'] ?? '';
-    final lastName      = app['last_name'] ?? '';
-    final idNo          = app['id_no'] ?? 'N/A';
+    final firstName = app['first_name'] ?? '';
+    final lastName = app['last_name'] ?? '';
+    final idNo = app['id_no'] ?? 'N/A';
     final collegeOffice = app['college_office'] ?? 'N/A';
     final controlNumber = app['control_number'] ?? 'N/A';
-    final status        = app['status'] ?? '';
-    final isPending     = status == 'pending_application';
-    final isApproved    = status == 'osd_approved';
+    final status = app['status'] ?? '';
+    final isPending = status == 'pending_application';
+    final isApproved = status == 'osd_approved';
 
     final Color statusColor = isPending
         ? const Color(0xFFF57C00)
@@ -953,7 +888,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         ),
         const SizedBox(width: 16),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Text('$firstName $lastName',
                   style: const TextStyle(
@@ -982,11 +918,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   icon: Icons.verified_rounded,
                   color: const Color(0xFF388E3C),
                   onPressed: () => _showCertifyNewAppDialog(app)),
-              _actionButton(
-                  label: 'Reject',
-                  icon: Icons.cancel_rounded,
-                  color: const Color(0xFFD32F2F),
-                  onPressed: () => _showRejectNewAppDialog(app)),
             ],
           ),
       ]),
@@ -994,7 +925,7 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // TAB 3 – Disciplinary Cases (students only)
+  // TAB 3 – Disciplinary Cases
   // ═══════════════════════════════════════════════════════════════════
 
   Widget _buildDisciplineTab() {
@@ -1029,7 +960,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   colors: [Color(0xFF7B1FA2), Color(0xFFAB47BC)]),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(Icons.gavel_rounded, color: Colors.white, size: 28),
+            child:
+                const Icon(Icons.gavel_rounded, color: Colors.white, size: 28),
           ),
           const SizedBox(width: 16),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1114,7 +1046,7 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
   Widget _buildDisciplineFilterTabs() {
     return Row(children: [
       _disciplineFilterTab(
-          value: 'open',
+          value: 'forwarded_discipline',
           label: 'Open Cases',
           icon: Icons.pending_actions_rounded,
           color: const Color(0xFFD32F2F),
@@ -1147,8 +1079,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         decoration: BoxDecoration(
           color: isSelected ? color : Colors.white,
           borderRadius: BorderRadius.circular(10),
-          border:
-              Border.all(color: isSelected ? color : Colors.grey[300]!, width: 1.5),
+          border: Border.all(
+              color: isSelected ? color : Colors.grey[300]!, width: 1.5),
           boxShadow: isSelected
               ? [
                   BoxShadow(
@@ -1190,20 +1122,24 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
 
   Widget _buildDisciplineCasesList() {
     if (disciplineCases.isEmpty) {
-      return _emptyState(selectedDisciplineTab == 'open'
-          ? 'No open discipline cases'
-          : 'No resolved cases yet');
+      return _emptyState(
+        selectedDisciplineTab == 'forwarded_discipline'
+            ? 'No open discipline cases'
+            : 'No resolved cases yet',
+      );
     }
     return Column(
         children: disciplineCases.map((c) => _disciplineCaseCard(c)).toList());
   }
 
   Widget _disciplineCaseCard(Map<String, dynamic> disciplineCase) {
-    final isOpen      = disciplineCase['status'] == 'open';
-    final isRenewal   = disciplineCase['renewal_application_id'] != null;
-    final penaltyRec  = _formatPenalty(disciplineCase['penalty_recommendation'] as String? ?? '');
-    final finalPenalty = _formatPenalty(disciplineCase['final_penalty'] as String? ?? '');
-    final srCode      = disciplineCase['sr_code']?.toString();
+    final isOpen =
+        disciplineCase['penalty_status'] == 'forwarded_discipline';
+    final penaltyRec = _formatPenalty(
+        disciplineCase['penalty_recommendation'] as String? ?? '');
+    final finalPenalty = _formatPenalty(
+        disciplineCase['final_penalty_status'] as String? ?? '');
+    final idNo = disciplineCase['id_no']?.toString() ?? 'N/A';
 
     String forwardedAtLabel = 'N/A';
     try {
@@ -1213,10 +1149,11 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     } catch (_) {}
 
     String resolvedAtLabel = '';
-    if (!isOpen && disciplineCase['decided_at'] != null) {
+    if (!isOpen && disciplineCase['final_penalty_set_at'] != null) {
       try {
-        final dt =
-            DateTime.parse(disciplineCase['decided_at'].toString()).toLocal();
+        final dt = DateTime.parse(
+                disciplineCase['final_penalty_set_at'].toString())
+            .toLocal();
         resolvedAtLabel = DateFormat('MMM dd, yyyy HH:mm').format(dt);
       } catch (_) {}
     }
@@ -1255,26 +1192,25 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
           ),
           const SizedBox(width: 14),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Text(disciplineCase['borrower_name'] ?? 'Unknown',
-                    style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A1A1A))),
-                const SizedBox(width: 8),
-                _chip(isOpen ? 'Open Case' : 'Resolved', statusColor),
-                const SizedBox(width: 6),
-                _chip(isRenewal ? 'Renewal' : 'New',
-                    isRenewal ? const Color(0xFF7B1FA2) : const Color(0xFF1565C0)),
-                const SizedBox(width: 6),
-                _chip('Student', const Color(0xFF1976D2)),
-              ]),
-              const SizedBox(height: 4),
-              if (srCode != null && srCode.isNotEmpty)
-                Text('SR Code: $srCode',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[600])),
-            ]),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Text(disciplineCase['borrower_name'] ?? 'Unknown',
+                        style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1A1A))),
+                    const SizedBox(width: 8),
+                    _chip(isOpen ? 'Open Case' : 'Resolved', statusColor),
+                    const SizedBox(width: 6),
+                    _chip('Student', const Color(0xFF1976D2)),
+                  ]),
+                  const SizedBox(height: 4),
+                  Text('ID No: $idNo',
+                      style:
+                          TextStyle(fontSize: 13, color: Colors.grey[600])),
+                ]),
           ),
           if (isOpen)
             ElevatedButton.icon(
@@ -1301,9 +1237,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
           Expanded(
               child: _detailItem(
                   Icons.access_time_rounded, 'Forwarded', forwardedAtLabel)),
-          Expanded(
-              child: _detailItem(Icons.warning_amber_rounded, 'Days Overdue',
-                  '${disciplineCase['days_overdue'] ?? 0}')),
         ]),
         const SizedBox(height: 12),
         Container(
@@ -1360,19 +1293,37 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
               if (resolvedAtLabel.isNotEmpty) ...[
                 const Spacer(),
                 Text(resolvedAtLabel,
-                    style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                    style:
+                        TextStyle(fontSize: 11, color: Colors.grey[500])),
               ],
             ]),
           ),
         ],
-        if (disciplineCase['notes'] != null &&
-            disciplineCase['notes'].toString().isNotEmpty) ...[
+        if (disciplineCase['forwarded_notes'] != null &&
+            disciplineCase['forwarded_notes'].toString().isNotEmpty) ...[
           const SizedBox(height: 8),
           Row(children: [
             Icon(Icons.notes_rounded, size: 14, color: Colors.grey[500]),
             const SizedBox(width: 6),
             Expanded(
-                child: Text('Notes: ${disciplineCase['notes']}',
+                child: Text(
+                    'Notes: ${disciplineCase['forwarded_notes']}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[500],
+                        fontStyle: FontStyle.italic))),
+          ]),
+        ],
+        if (disciplineCase['assessment_remarks'] != null &&
+            disciplineCase['assessment_remarks'].toString().isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Row(children: [
+            Icon(Icons.rate_review_rounded,
+                size: 14, color: Colors.grey[500]),
+            const SizedBox(width: 6),
+            Expanded(
+                child: Text(
+                    'Assessment: ${disciplineCase['assessment_remarks']}',
                     style: TextStyle(
                         fontSize: 12,
                         color: Colors.grey[500],
@@ -1406,7 +1357,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-                gradient: gradient, borderRadius: BorderRadius.circular(12)),
+                gradient: gradient,
+                borderRadius: BorderRadius.circular(12)),
             child: Icon(icon, color: Colors.white, size: 28)),
         const SizedBox(width: 20),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1500,7 +1452,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
       style: ElevatedButton.styleFrom(
           backgroundColor: color,
           foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
       onPressed: onPressed,
@@ -1541,7 +1494,7 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
 
   String _formatPenalty(String penalty) {
     switch (penalty) {
-      case 'permanently_terminated':
+      case 'terminated':
         return 'Permanently Terminated';
       case 'suspended_1_semester':
         return 'Suspended for 1 Semester';
@@ -1552,16 +1505,12 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Enum — which flow the CertifyDialog is handling
+// Enum
 // ═══════════════════════════════════════════════════════════════════
 enum _AppTableSource { renewal, newApplication }
 
 // ═══════════════════════════════════════════════════════════════════
 // CERTIFY DIALOG
-// renewal  → status: renewal_osd_approved
-//             cols : renewal_hrmo_osd_signature_url, renewal_hrmo_osd_signatory_name
-// newApp   → status: osd_approved
-//             cols : hrmo_osd_signature, hrmo_osd_name, hrmo_osd_date_signed
 // ═══════════════════════════════════════════════════════════════════
 class _CertifyDialog extends StatefulWidget {
   final String applicationId;
@@ -1606,8 +1555,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
     super.initState();
     _loadSignatoryName();
     _signatureController.addListener(() {
-      setState(() =>
-          _hasSignature = _signatureController.isNotEmpty || _uploadedImageBytes != null);
+      setState(() => _hasSignature =
+          _signatureController.isNotEmpty || _uploadedImageBytes != null);
     });
     _signatoryNameController.addListener(() => setState(() {}));
   }
@@ -1643,13 +1592,13 @@ class _CertifyDialogState extends State<_CertifyDialog> {
     final result = await FilePicker.platform
         .pickFiles(type: FileType.image, allowMultiple: false);
     if (result != null && result.files.isNotEmpty) {
-      final bytes    = result.files.first.bytes;
+      final bytes = result.files.first.bytes;
       final fileName = result.files.first.name;
       if (bytes != null) {
         setState(() {
           _uploadedImageBytes = bytes;
-          _uploadedFileName   = fileName;
-          _hasSignature       = true;
+          _uploadedFileName = fileName;
+          _hasSignature = true;
         });
       }
     }
@@ -1658,8 +1607,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
   Future<String?> _uploadSignature(Uint8List bytes, String fileName) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final userId    = supabase.auth.currentUser?.id ?? 'unknown';
-      final path      = 'osd_signatures/${userId}_${timestamp}_$fileName';
+      final userId = supabase.auth.currentUser?.id ?? 'unknown';
+      final path = 'osd_signatures/${userId}_${timestamp}_$fileName';
       await supabase.storage.from('signatures').uploadBinary(path, bytes);
       return supabase.storage.from('signatures').getPublicUrl(path);
     } catch (e) {
@@ -1669,92 +1618,95 @@ class _CertifyDialogState extends State<_CertifyDialog> {
   }
 
   Future<void> _approve() async {
-  if (!_canApprove) return;
-  setState(() => _isSubmitting = true);
-  try {
-    Uint8List? sigBytes;
-    String fileName;
-    if (_isDrawMode) {
-      sigBytes = await _signatureController.toPngBytes();
-      if (sigBytes == null) throw Exception('Failed to export drawn signature');
-      fileName = 'drawn_signature.png';
-    } else {
-      sigBytes = _uploadedImageBytes;
-      fileName = _uploadedFileName ?? 'uploaded_signature.png';
-    }
-
-    final signatureUrl = await _uploadSignature(sigBytes!, fileName);
-    if (signatureUrl == null) throw Exception('Signature upload failed');
-
-    // Check if has disciplinary action - if true, REJECT instead
-    if (_hasDisciplinaryAction == true) {
-      // REJECT the application
-      if (widget.tableSource == _AppTableSource.renewal) {
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'renewal_osd_rejected',
-          'renewal_hrmo_osd_rejection_reason': 'Has disciplinary actions with final judgement relating to government properties',
-          'renewal_hrmo_osd_signature_url': signatureUrl,
-          'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
-        }).eq('id', widget.applicationId);
+    if (!_canApprove) return;
+    setState(() => _isSubmitting = true);
+    try {
+      Uint8List? sigBytes;
+      String fileName;
+      if (_isDrawMode) {
+        sigBytes = await _signatureController.toPngBytes();
+        if (sigBytes == null)
+          throw Exception('Failed to export drawn signature');
+        fileName = 'drawn_signature.png';
       } else {
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'osd_rejected',
-          'rejection_reason': 'Has disciplinary actions with final judgement relating to government properties',
-          'hrmo_osd_signature': signatureUrl,
-          'hrmo_osd_name': _signatoryNameController.text.trim(),
-          'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
-        }).eq('id', widget.applicationId);
+        sigBytes = _uploadedImageBytes;
+        fileName = _uploadedFileName ?? 'uploaded_signature.png';
       }
 
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Application rejected due to disciplinary actions.'),
-            backgroundColor: Color(0xFFD32F2F),
-          ),
-        );
-      }
-    } else {
-      // APPROVE the application (existing code)
-      if (widget.tableSource == _AppTableSource.renewal) {
-        // Renewal: osd_ approved status, shared hrmo_osd columns
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'renewal_osd_approved',
-          'renewal_hrmo_osd_signature_url': signatureUrl,
-          'renewal_hrmo_osd_signatory_name': _signatoryNameController.text.trim(),
-        }).eq('id', widget.applicationId);
+      final signatureUrl = await _uploadSignature(sigBytes!, fileName);
+      if (signatureUrl == null) throw Exception('Signature upload failed');
+
+      if (_hasDisciplinaryAction == true) {
+        if (widget.tableSource == _AppTableSource.renewal) {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_osd_rejected',
+            'renewal_hrmo_osd_rejection_reason':
+                'Has disciplinary actions with final judgement relating to government properties',
+            'renewal_hrmo_osd_signature_url': signatureUrl,
+            'renewal_hrmo_osd_signatory_name':
+                _signatoryNameController.text.trim(),
+          }).eq('id', widget.applicationId);
+        } else {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'osd_rejected',
+            'rejection_reason':
+                'Has disciplinary actions with final judgement relating to government properties',
+            'hrmo_osd_signature': signatureUrl,
+            'hrmo_osd_name': _signatoryNameController.text.trim(),
+            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
+          }).eq('id', widget.applicationId);
+        }
+
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content:
+                  Text('Application rejected due to disciplinary actions.'),
+              backgroundColor: Color(0xFFD32F2F),
+            ),
+          );
+        }
       } else {
-        // New Application: same columns as HRMO
-        await supabase.from('borrowing_applications_version2').update({
-          'status': 'osd_approved',
-          'hrmo_osd_signature': signatureUrl,
-          'hrmo_osd_name': _signatoryNameController.text.trim(),
-          'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
-        }).eq('id', widget.applicationId);
+        if (widget.tableSource == _AppTableSource.renewal) {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'renewal_osd_approved',
+            'is_hrmo_osd_approved': true,
+            'renewal_hrmo_osd_signature_url': signatureUrl,
+            'renewal_hrmo_osd_signatory_name':
+                _signatoryNameController.text.trim(),
+          }).eq('id', widget.applicationId);
+        } else {
+          await supabase.from('borrowing_applications_version2').update({
+            'status': 'osd_approved',
+            'is_hrmo_osd_approved': true,
+            'hrmo_osd_signature': signatureUrl,
+            'hrmo_osd_name': _signatoryNameController.text.trim(),
+            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
+          }).eq('id', widget.applicationId);
+        }
+
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Application certified and approved.'),
+                backgroundColor: Color(0xFF388E3C)),
+          );
+        }
       }
 
+      widget.onApproved();
+    } catch (e) {
+      debugPrint('Certify error: $e');
       if (mounted) {
-        Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Application certified and approved.'),
-              backgroundColor: Color(0xFF388E3C)),
-        );
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
       }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
-    
-    widget.onApproved();
-  } catch (e) {
-    debugPrint('Certify error: $e');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
-    }
-  } finally {
-    if (mounted) setState(() => _isSubmitting = false);
   }
-}
 
   @override
   Widget build(BuildContext context) {
@@ -1764,8 +1716,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
         width: 620,
         constraints: const BoxConstraints(maxHeight: 720),
         padding: const EdgeInsets.all(28),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Header
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
               padding: const EdgeInsets.all(10),
@@ -1788,7 +1740,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF1A1A1A))),
                   Text(widget.applicantName,
-                      style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                      style:
+                          TextStyle(fontSize: 13, color: Colors.grey[600])),
                 ])),
             IconButton(
                 icon: const Icon(Icons.close_rounded),
@@ -1797,13 +1750,11 @@ class _CertifyDialogState extends State<_CertifyDialog> {
           const SizedBox(height: 8),
           const Divider(),
           const SizedBox(height: 16),
-
           Expanded(
             child: SingleChildScrollView(
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Disciplinary status
                     const Text('Disciplinary Status',
                         style: TextStyle(
                             fontSize: 15,
@@ -1812,8 +1763,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                     const SizedBox(height: 4),
                     Text(
                         'Select the applicable disciplinary status for this applicant:',
-                        style:
-                            TextStyle(fontSize: 13, color: Colors.grey[600])),
+                        style: TextStyle(
+                            fontSize: 13, color: Colors.grey[600])),
                     const SizedBox(height: 14),
                     _disciplinaryOption(
                         value: false,
@@ -1831,8 +1782,6 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                     const SizedBox(height: 28),
                     const Divider(),
                     const SizedBox(height: 20),
-
-                    // Signatory name
                     const Text('Signatory Name *',
                         style: TextStyle(
                             fontSize: 15,
@@ -1851,8 +1800,6 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                       ),
                     ),
                     const SizedBox(height: 20),
-
-                    // Signature
                     const Text('OSD Signature *',
                         style: TextStyle(
                             fontSize: 15,
@@ -1861,8 +1808,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                     const SizedBox(height: 4),
                     Text(
                         'Draw or upload your signature to certify this application:',
-                        style:
-                            TextStyle(fontSize: 13, color: Colors.grey[600])),
+                        style: TextStyle(
+                            fontSize: 13, color: Colors.grey[600])),
                     const SizedBox(height: 14),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1871,7 +1818,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                           child: Container(
                             height: 150,
                             decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey[400]!),
+                                border:
+                                    Border.all(color: Colors.grey[400]!),
                                 borderRadius: BorderRadius.circular(8)),
                             child: _isDrawMode
                                 ? ClipRRect(
@@ -1885,14 +1833,16 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                                         onPressed: _pickImage,
                                         icon: const Icon(Icons.upload_file,
                                             size: 20),
-                                        label: const Text('Upload Signature'),
+                                        label:
+                                            const Text('Upload Signature'),
                                         style: ElevatedButton.styleFrom(
                                             backgroundColor:
                                                 const Color(0xFF1976D2),
                                             foregroundColor: Colors.white),
                                       ))
                                     : ClipRRect(
-                                        borderRadius: BorderRadius.circular(8),
+                                        borderRadius:
+                                            BorderRadius.circular(8),
                                         child: Image.memory(
                                             _uploadedImageBytes!,
                                             fit: BoxFit.contain)),
@@ -1907,7 +1857,7 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                               _signatureController.clear();
                               setState(() {
                                 _uploadedImageBytes = null;
-                                _hasSignature       = false;
+                                _hasSignature = false;
                               });
                             },
                           ),
@@ -1920,7 +1870,7 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                                 : 'Switch to Draw',
                             onPressed: () {
                               setState(() {
-                                _isDrawMode         = !_isDrawMode;
+                                _isDrawMode = !_isDrawMode;
                                 _uploadedImageBytes = null;
                                 _hasSignature =
                                     _signatureController.isNotEmpty;
@@ -1935,12 +1885,12 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                       _isDrawMode
                           ? 'Draw your signature in the box above'
                           : 'Click "Upload Signature" to choose an image file',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[500]),
                     ),
                   ]),
             ),
           ),
-
           const SizedBox(height: 20),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
@@ -1952,10 +1902,10 @@ class _CertifyDialogState extends State<_CertifyDialog> {
               const SizedBox(width: 12),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _canApprove 
-                      ? (_hasDisciplinaryAction == true 
-                          ? const Color(0xFFD32F2F)  // Red for reject
-                          : const Color(0xFF388E3C)) // Green for approve
+                  backgroundColor: _canApprove
+                      ? (_hasDisciplinaryAction == true
+                          ? const Color(0xFFD32F2F)
+                          : const Color(0xFF388E3C))
                       : Colors.grey[300],
                   foregroundColor:
                       _canApprove ? Colors.white : Colors.grey[500],
@@ -1964,7 +1914,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: _canApprove && !_isSubmitting ? _approve : null,
+                onPressed:
+                    _canApprove && !_isSubmitting ? _approve : null,
                 icon: _isSubmitting
                     ? const SizedBox(
                         width: 16,
@@ -1972,15 +1923,17 @@ class _CertifyDialogState extends State<_CertifyDialog> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
                     : Icon(
-                        _hasDisciplinaryAction == true 
-                            ? Icons.cancel_rounded 
+                        _hasDisciplinaryAction == true
+                            ? Icons.cancel_rounded
                             : Icons.verified_rounded,
                         size: 18,
                       ),
                 label: Text(
-                    _isSubmitting 
-                        ? 'Processing...' 
-                        : (_hasDisciplinaryAction == true ? 'Reject' : 'Approve'),
+                    _isSubmitting
+                        ? 'Processing...'
+                        : (_hasDisciplinaryAction == true
+                            ? 'Reject'
+                            : 'Approve'),
                     style: const TextStyle(
                         fontWeight: FontWeight.w600, fontSize: 15)),
               ),
@@ -2025,9 +1978,8 @@ class _CertifyDialogState extends State<_CertifyDialog> {
               child: Text(label,
                   style: TextStyle(
                       fontSize: 13,
-                      fontWeight: isSelected
-                          ? FontWeight.w600
-                          : FontWeight.normal,
+                      fontWeight:
+                          isSelected ? FontWeight.w600 : FontWeight.normal,
                       color:
                           isSelected ? activeColor : Colors.grey[700]))),
         ]),
@@ -2037,7 +1989,7 @@ class _CertifyDialogState extends State<_CertifyDialog> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FINALIZE DECISION DIALOG  (students — unchanged logic from guidance)
+// FINALIZE DECISION DIALOG
 // ═══════════════════════════════════════════════════════════════════
 class _FinalizeDecisionDialog extends StatefulWidget {
   final Map<String, dynamic> disciplineCase;
@@ -2059,8 +2011,14 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
   @override
   void initState() {
     super.initState();
+    // FIX: was checking `rec == 'terminated' || rec == 'terminated'` (duplicate)
+    // now correctly handles both old and new values
     final rec = widget.disciplineCase['penalty_recommendation'] as String?;
-    if (rec != null && rec.isNotEmpty) _finalPenalty = rec;
+    if (rec == 'permanently_terminated' || rec == 'terminated') {
+      _finalPenalty = 'terminated';
+    } else if (rec == 'suspended_1_semester') {
+      _finalPenalty = 'suspended_1_semester';
+    }
   }
 
   @override
@@ -2071,7 +2029,7 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
 
   String _formatPenalty(String penalty) {
     switch (penalty) {
-      case 'permanently_terminated':
+      case 'terminated':
         return 'Permanently Terminated';
       case 'suspended_1_semester':
         return 'Suspended for 1 Semester';
@@ -2084,54 +2042,28 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
     if (!_canFinalize) return;
     setState(() => _isSubmitting = true);
     try {
-      final now          = DateTime.now().toIso8601String();
-      final userId       = supabase.auth.currentUser?.id;
-      final caseId       = widget.disciplineCase['id'];
-      final appId        = widget.disciplineCase['application_id'];
-      final renewalAppId = widget.disciplineCase['renewal_application_id'];
+      final now = DateTime.now().toIso8601String();
+      final userId = supabase.auth.currentUser?.id;
 
-      await supabase.from('student_discipline').update({
-        'status': 'resolved',
-        'final_penalty': _finalPenalty,
-        'final_decision_notes': _notesController.text.trim().isEmpty
+      await supabase.from('liabilities_version2').update({
+        'penalty_status': _finalPenalty,
+        'final_penalty_status': _finalPenalty,
+        'final_penalty_set_by': userId,
+        'final_penalty_set_at': now,
+        'final_penalty_remarks': _notesController.text.trim().isEmpty
             ? null
             : _notesController.text.trim(),
-        'decided_by': userId,
-        'decided_at': now,
-        'notification_sent': true,
-      }).eq('id', caseId);
+      }).eq('id', widget.disciplineCase['id']);
 
-      await supabase
-          .from('liabilities')
-          .update({'status': 'resolved', 'resolved_at': now}).eq(
-              'id', widget.disciplineCase['liability_id']);
+      final applicationId = widget.disciplineCase['application_id'];
+      if (applicationId != null) {
+        await supabase.from('borrowing_applications_version2').update({
+          'penalty_status': _finalPenalty,
+        }).eq('id', applicationId);
 
-      if (renewalAppId != null) {
-        await supabase.from('renewal_applications').update(
-            {'status': _finalPenalty, 'final_penalty': _finalPenalty}).eq(
-            'id', renewalAppId);
-      } else if (appId != null) {
-        await supabase.from('borrowing_applications').update(
-            {'status': _finalPenalty, 'final_penalty': _finalPenalty}).eq(
-            'id', appId);
-      }
-
-      if (renewalAppId != null) {
-        final renewal = await supabase
-            .from('renewal_applications')
-            .select('session_id')
-            .eq('id', renewalAppId)
-            .maybeSingle();
-        if (renewal != null && renewal['session_id'] != null) {
-          await supabase
-              .from('borrowing_sessions')
-              .update({'status': _finalPenalty}).eq(
-                  'id', renewal['session_id']);
-        }
-      } else if (appId != null) {
-        await supabase
-            .from('borrowing_sessions')
-            .update({'status': _finalPenalty}).eq('application_id', appId);
+        await supabase.from('borrowing_sessions').update({
+          'status': _finalPenalty,
+        }).eq('application_id', applicationId);
       }
 
       if (mounted) {
@@ -2148,7 +2080,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
       debugPrint('Finalize error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+            SnackBar(
+                content: Text('Error: $e'), backgroundColor: Colors.red));
       }
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
@@ -2157,12 +2090,14 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final gsoRec       = widget.disciplineCase['penalty_recommendation'] as String? ?? '';
-    final borrowerName = widget.disciplineCase['borrower_name'] ?? 'Unknown';
-    final srCode       = widget.disciplineCase['sr_code']?.toString();
-    final bikeNumber   = widget.disciplineCase['bike_number'] ?? 'N/A';
-    final daysOverdue  = widget.disciplineCase['days_overdue'] ?? 0;
-    final notes        = widget.disciplineCase['notes'];
+    final gsoRec =
+        widget.disciplineCase['penalty_recommendation'] as String? ?? '';
+    final borrowerName =
+        widget.disciplineCase['borrower_name'] ?? 'Unknown';
+    final idNo = widget.disciplineCase['id_no']?.toString() ?? 'N/A';
+    final bikeNumber = widget.disciplineCase['bike_number'] ?? 'N/A';
+    final notes = widget.disciplineCase['forwarded_notes'];
+    final assessmentRemarks = widget.disciplineCase['assessment_remarks'];
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -2170,7 +2105,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
         width: 580,
         constraints: const BoxConstraints(maxHeight: 720),
         padding: const EdgeInsets.all(28),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
               padding: const EdgeInsets.all(10),
@@ -2208,7 +2144,6 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Case summary
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
@@ -2216,7 +2151,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                         color: const Color(0xFFF3E5F5),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                            color: const Color(0xFF7B1FA2).withOpacity(0.3)),
+                            color:
+                                const Color(0xFF7B1FA2).withOpacity(0.3)),
                       ),
                       child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2233,17 +2169,19 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                             ]),
                             const SizedBox(height: 12),
                             _caseRow('Student', borrowerName),
-                            if (srCode != null && srCode.isNotEmpty)
-                              _caseRow('SR Code', srCode),
+                            _caseRow('ID No', idNo),
                             _caseRow('Bike Number', bikeNumber),
-                            _caseRow('Days Overdue', daysOverdue.toString()),
-                            if (notes != null && notes.toString().isNotEmpty)
-                              _caseRow('GSO Notes', notes),
+                            if (notes != null &&
+                                notes.toString().isNotEmpty)
+                              _caseRow(
+                                  'Forwarded Notes', notes.toString()),
+                            if (assessmentRemarks != null &&
+                                assessmentRemarks.toString().isNotEmpty)
+                              _caseRow('Assessment',
+                                  assessmentRemarks.toString()),
                           ]),
                     ),
                     const SizedBox(height: 20),
-
-                    // GSO recommendation
                     if (gsoRec.isNotEmpty) ...[
                       Container(
                         width: double.infinity,
@@ -2252,8 +2190,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                           color: const Color(0xFFFFEBEE),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                              color:
-                                  const Color(0xFFD32F2F).withOpacity(0.3)),
+                              color: const Color(0xFFD32F2F)
+                                  .withOpacity(0.3)),
                         ),
                         child: Row(children: [
                           const Icon(Icons.assignment_rounded,
@@ -2278,7 +2216,6 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                               fontSize: 12, color: Colors.grey[500])),
                       const SizedBox(height: 16),
                     ],
-
                     const Text('Final Penalty Decision *',
                         style: TextStyle(
                             fontSize: 15,
@@ -2287,11 +2224,11 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                     const SizedBox(height: 4),
                     Text(
                         'This decision is final and will be applied to the student.',
-                        style:
-                            TextStyle(fontSize: 13, color: Colors.grey[500])),
+                        style: TextStyle(
+                            fontSize: 13, color: Colors.grey[500])),
                     const SizedBox(height: 12),
                     _penaltyOption(
-                        value: 'permanently_terminated',
+                        value: 'terminated',
                         label: 'Permanently Terminated',
                         description:
                             'Student is permanently banned from the PedalHub bike borrowing program.',
@@ -2306,7 +2243,6 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                         icon: Icons.pause_circle_rounded,
                         color: const Color(0xFFE65100)),
                     const SizedBox(height: 24),
-
                     const Text('Decision Notes (optional)',
                         style: TextStyle(
                             fontSize: 15,
@@ -2418,10 +2354,13 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                     style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
-                        color: isSelected ? color : const Color(0xFF1A1A1A))),
+                        color: isSelected
+                            ? color
+                            : const Color(0xFF1A1A1A))),
                 const SizedBox(height: 2),
                 Text(description,
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey[600])),
               ])),
           Icon(
               isSelected
@@ -2441,7 +2380,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
         SizedBox(
             width: 110,
             child: Text(label,
-                style: TextStyle(fontSize: 12, color: Colors.grey[600]))),
+                style:
+                    TextStyle(fontSize: 12, color: Colors.grey[600]))),
         Expanded(
             child: Text(value,
                 style: const TextStyle(

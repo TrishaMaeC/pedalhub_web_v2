@@ -53,6 +53,7 @@ class _ForReturnPageState extends State<ForReturnPage> {
     }
   }
 
+
   Future<void> _loadUserCampusAndFetch() async {
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) return;
@@ -93,96 +94,83 @@ class _ForReturnPageState extends State<ForReturnPage> {
   }
 
   Future<void> _fetchNewBorrows() async {
-    if (userCampus == null) return;
-    try {
-      final appsResponse = await supabase
-          .from('borrowing_applications_version2')
-          .select('*')
-          .eq('status', selectedNewStatus)
-          .ilike('campus', userCampus!)
-          .order('created_at', ascending: false);
+  if (userCampus == null) return;
+  try {
+    // 1. We query sessions directly to ensure "active" ones are found
+    // We join the application table using !inner to filter by campus
+    final response = await supabase
+        .from('borrowing_sessions')
+        .select('''
+          *,
+          borrowing_applications_version2!inner (*)
+        ''')
+        .eq('status', 'active') 
+        .ilike('borrowing_applications_version2.campus', userCampus!)
+        .order('created_at', ascending: false);
 
-      final apps = List<Map<String, dynamic>>.from(appsResponse);
-      final enriched = await Future.wait(apps.map((app) async {
-        try {
-          final sessionRes = await supabase
-              .from('borrowing_sessions')
-              .select('id, bike_id, start_time, end_time, status')
-              .eq('application_id', app['id'])
-              .order('created_at', ascending: false)
-              .limit(1)
-              .maybeSingle();
-          return {...app, 'borrowing_sessions': sessionRes};
-        } catch (_) {
-          return {...app, 'borrowing_sessions': null};
-        }
-      }));
-      setState(() => newActiveBorrows = enriched);
-    } catch (e) {
-      debugPrint('Fetch new borrows error: $e');
-    }
+    final sessionsList = List<Map<String, dynamic>>.from(response);
+
+    // 2. Map it to your 'enriched' format
+    final List<Map<String, dynamic>> enriched = sessionsList.map((session) {
+      // Extract the application data
+      final appData = Map<String, dynamic>.from(session['borrowing_applications_version2']);
+      
+      // Clean the session data (remove the nested app to avoid recursion)
+      final sessionData = Map<String, dynamic>.from(session)..remove('borrowing_applications_version2');
+
+      return {
+        ...appData,
+        'borrowing_sessions': sessionData,
+      };
+    }).toList();
+
+    setState(() => newActiveBorrows = enriched);
+  } catch (e) {
+    debugPrint('Fetch new borrows error: $e');
   }
+}
 
-  Future<void> _fetchRenewalBorrows() async {
-    if (userCampus == null) return;
-    try {
-      // Fetch renewal applications that need bike inspection/return handling
-      // Status: renewal_medical_approved (student/personnel need bike inspection)
-      // Status: active_renewal (currently borrowed, for return)
-      // Status: renewal_bike_damage_reported (self-reported damage, needs verification)
-      final appsResponse = await supabase
-          .from('borrowing_applications_version2')
-          .select('*')
-          .inFilter('status', [
-            selectedRenewalStatus,
-            'renewal_bike_damage_reported',
-          ])
-          .eq('user_type', selectedRenewalUserType)
-          .ilike('campus', userCampus!)
-          .order('created_at', ascending: false);
+Future<void> _fetchRenewalBorrows() async {
+  if (userCampus == null) return;
+  try {
+    // Fetch sessions where status is active, specifically for renewals
+    // We can filter by the application's status or user_type inside the join
+    final response = await supabase
+        .from('borrowing_sessions')
+        .select('''
+          *,
+          bike_info:bikes (*),
+          app:borrowing_applications_version2!inner (*)
+        ''')
+        .eq('status', 'active')
+        .eq('app.user_type', selectedRenewalUserType)
+        .ilike('app.campus', userCampus!)
+        .order('created_at', ascending: false);
 
-      final apps = List<Map<String, dynamic>>.from(appsResponse);
-      final enriched = await Future.wait(apps.map((app) async {
-        try {
-          final sessionRes = await supabase
-              .from('borrowing_sessions')
-              .select('id, bike_id, start_time, end_time, status')
-              .eq('application_id', app['id'])
-              .order('created_at', ascending: false)
-              .limit(1)
-              .maybeSingle();
-          
-          // Also fetch bike info if available
-          Map<String, dynamic>? bikeInfo;
-          if (sessionRes != null && sessionRes['bike_id'] != null) {
-            bikeInfo = await supabase
-                .from('bikes')
-                .select('*')
-                .eq('id', sessionRes['bike_id'])
-                .maybeSingle();
-          } else if (app['renewal_gso_bike_id'] != null) {
-            // For renewals, also check renewal_gso_bike_id
-            bikeInfo = await supabase
-                .from('bikes')
-                .select('*')
-                .eq('id', app['renewal_gso_bike_id'])
-                .maybeSingle();
-          }
-          
-          return {
-            ...app, 
-            'borrowing_sessions': sessionRes,
-            'bike_info': bikeInfo,
-          };
-        } catch (_) {
-          return {...app, 'borrowing_sessions': null, 'bike_info': null};
-        }
-      }));
-      setState(() => renewalActiveBorrows = enriched);
-    } catch (e) {
-      debugPrint('Fetch renewal borrows error: $e');
-    }
+    final sessionsList = List<Map<String, dynamic>>.from(response);
+
+    final List<Map<String, dynamic>> enriched = sessionsList.map((session) {
+      final appData = Map<String, dynamic>.from(session['app']);
+      final bikeData = session['bike_info'] != null 
+          ? Map<String, dynamic>.from(session['bike_info']) 
+          : null;
+      
+      final sessionData = Map<String, dynamic>.from(session)
+        ..remove('app')
+        ..remove('bike_info');
+
+      return {
+        ...appData,
+        'borrowing_sessions': sessionData,
+        'bike_info': bikeData,
+      };
+    }).toList();
+
+    setState(() => renewalActiveBorrows = enriched);
+  } catch (e) {
+    debugPrint('Fetch renewal borrows error: $e');
   }
+}
 
   Future<void> _fetchShortTermBorrows() async {
     if (userCampus == null) return;

@@ -114,7 +114,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
 
     // Client-side campus filter since physical_examinations doesn't have campus directly
     final filteredBorrowingExams = (borrowingExams as List).where((exam) {
-      final app = exam['borrowing_applications'];
+      final app = exam['borrowing_applications_version2'];
       if (app == null) return false;
       final campus = (app['campus'] ?? '').toString().toLowerCase();
       return campus == userCampus;
@@ -148,7 +148,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
       } else {
         passCount++;
       }
-      final application = exam['borrowing_applications'];
+      final application = exam['borrowing_applications_version2'];
       if (application != null) {
         if (application['employee_no'] != null) {
           totalPersonnel++;
@@ -216,7 +216,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
 
     // Filter by campus client-side
     final filtered = (response as List).where((appt) {
-      final app = appt['borrowing_applications'];
+      final app = appt['borrowing_applications_version2'];
       if (app == null) return false;
       final campus = (app['campus'] ?? '').toString().toLowerCase();
       return campus == userCampus;
@@ -232,7 +232,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
         .ilike('campus', userCampus!);
 
     final newAppsResponse = await supabase
-        .from('borrowing_applications')
+        .from('borrowing_applications_version2')
         .select('id')
         .ilike('campus', userCampus!);
 
@@ -652,7 +652,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
             )
           else
             ...upcomingAppointments.map((appointment) {
-              final appData = appointment['borrowing_applications'] ?? {};
+              final appData = appointment['borrowing_applications_version2'] ?? {};
               final date = DateTime.tryParse(appointment['appointment_date'] ?? '') ?? DateTime.now();
               final time = appointment['appointment_time'] ?? '00:00:00';
               final timeStr = time.toString().length >= 5 ? time.toString().substring(0, 5) : time.toString();
