@@ -14,18 +14,20 @@ class HealthDashboard extends StatefulWidget {
 class _HealthDashboardState extends State<HealthDashboard> {
   final supabase = Supabase.instance.client;
 
+  // ── Counters
   int totalExaminations = 0;
-  int reassessments = 0;
   int totalStudents = 0;
   int totalPersonnel = 0;
-
   int passCount = 0;
   int reassessmentCount = 0;
   int totalRenewals = 0;
   int totalNewApplications = 0;
 
+  // ── Chart data
   Map<String, int> bmiCategoryDistribution = {};
   Map<String, int> healthConcerns = {};
+
+  // ── Appointments
   List<Map<String, dynamic>> upcomingAppointments = [];
 
   bool isLoading = true;
@@ -40,7 +42,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
   }
 
   // ─────────────────────────────────────────────
-  // LOAD USER CAMPUS THEN FETCH
+  // STEP 1 — LOAD USER CAMPUS
   // ─────────────────────────────────────────────
   Future<void> _loadUserCampusAndDashboard() async {
     final userId = supabase.auth.currentUser?.id;
@@ -54,82 +56,53 @@ class _HealthDashboardState extends State<HealthDashboard> {
           .single();
 
       setState(() => userCampus = (profile['campus'] as String).toLowerCase());
-      _loadDashboardData();
+      await _loadDashboardData();
     } catch (e) {
       debugPrint('CAMPUS LOAD ERROR: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading user profile: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Error loading user profile: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
   }
 
+  // ─────────────────────────────────────────────
+  // STEP 2 — LOAD ALL DASHBOARD DATA
+  // ─────────────────────────────────────────────
   Future<void> _loadDashboardData() async {
     if (userCampus == null) return;
     setState(() => isLoading = true);
     try {
       await Future.wait([
         _loadExaminationStats(),
-        _loadHealthMetrics(),
         _loadUpcomingAppointments(),
-        _loadRenewalsData(),
+        _loadApplicationCounts(),
       ]);
     } catch (e) {
       debugPrint('Error loading dashboard data: $e');
     } finally {
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
+  // ─────────────────────────────────────────────
+  // EXAMINATION STATS
+  // Now: physical_examinations → borrowing_applications_version2
+  // Uses is_renewal to distinguish renewal exams.
+  // Uses user_type to distinguish student vs personnel.
+  // Campus filter is done server-side via the joined table.
+  // ─────────────────────────────────────────────
   Future<void> _loadExaminationStats() async {
+    // Reset
+    totalExaminations = 0;
     totalStudents = 0;
     totalPersonnel = 0;
     passCount = 0;
     reassessmentCount = 0;
-
-    // Filter borrowing exams by campus via the joined borrowing_applications
-    final borrowingExams = await supabase
-        .from('physical_examinations')
-        .select('''
-          bmi_category, is_reassessment, balance, musculoskeletal,
-          lungs, heart, extremities, hearing, vision,
-          borrowing_applications!physical_examinations_application_id_fkey(
-            sr_code, employee_no, campus
-          )
-        ''')
-        .not('application_id', 'is', null);
-
-    // Filter renewal exams by campus via the joined renewal_applications
-    final renewalExams = await supabase
-        .from('physical_examinations')
-        .select('''
-          bmi_category, is_reassessment, balance, musculoskeletal,
-          lungs, heart, extremities, hearing, vision,
-          renewal_applications!physical_examinations_renewal_application_id_fkey(
-            is_personnel, campus
-          )
-        ''')
-        .not('renewal_application_id', 'is', null);
-
-    // Client-side campus filter since physical_examinations doesn't have campus directly
-    final filteredBorrowingExams = (borrowingExams as List).where((exam) {
-      final app = exam['borrowing_applications_version2'];
-      if (app == null) return false;
-      final campus = (app['campus'] ?? '').toString().toLowerCase();
-      return campus == userCampus;
-    }).toList();
-
-    final filteredRenewalExams = (renewalExams as List).where((exam) {
-      final app = exam['renewal_applications'];
-      if (app == null) return false;
-      final campus = (app['campus'] ?? '').toString().toLowerCase();
-      return campus == userCampus;
-    }).toList();
-
-    final allExams = [...filteredBorrowingExams, ...filteredRenewalExams];
-    totalExaminations = allExams.length;
-
     bmiCategoryDistribution = {};
     healthConcerns = {
       'Balance Issues': 0,
@@ -141,57 +114,87 @@ class _HealthDashboardState extends State<HealthDashboard> {
       'Vision Issues': 0,
     };
 
-    for (var exam in filteredBorrowingExams) {
-      _processHealthConcerns(exam);
+    // Single query — join to borrowing_applications_version2 for campus + user_type
+    // Filter campus server-side using ilike on the joined table
+    final exams = await supabase
+        .from('physical_examinations')
+        .select('''
+          id, bmi_category, is_reassessment, is_renewal,
+          balance, musculoskeletal, lungs, heart,
+          extremities, hearing, vision,
+          borrowing_applications_version2!physical_examinations_application_id_fkey(
+            user_type, campus
+          )
+        ''')
+        .not('application_id', 'is', null);
+
+    // Client-side campus filter
+    // (physical_examinations has no campus column directly)
+    final filtered = (exams as List).where((exam) {
+      final app = exam['borrowing_applications_version2'];
+      if (app == null) return false;
+      final campus = (app['campus'] ?? '').toString().toLowerCase();
+      return campus == userCampus;
+    }).toList();
+
+    totalExaminations = filtered.length;
+
+    for (final exam in filtered) {
+      // BMI distribution
+      final category = (exam['bmi_category'] ?? 'Unknown') as String;
+      bmiCategoryDistribution[category] =
+          (bmiCategoryDistribution[category] ?? 0) + 1;
+
+      // Pass vs reassessment
       if (exam['is_reassessment'] == true) {
         reassessmentCount++;
       } else {
         passCount++;
       }
-      final application = exam['borrowing_applications_version2'];
-      if (application != null) {
-        if (application['employee_no'] != null) {
+
+      // Student vs personnel — use user_type from borrowing_applications_version2
+      final app = exam['borrowing_applications_version2'];
+      if (app != null) {
+        final userType = (app['user_type'] ?? '').toString().toLowerCase();
+        if (userType == 'personnel') {
           totalPersonnel++;
         } else {
           totalStudents++;
         }
       }
-    }
 
-    for (var exam in filteredRenewalExams) {
-      _processHealthConcerns(exam);
-      if (exam['is_reassessment'] == true) {
-        reassessmentCount++;
-      } else {
-        passCount++;
+      // Health concerns
+      if (exam['balance'] == false) {
+        healthConcerns['Balance Issues'] = healthConcerns['Balance Issues']! + 1;
       }
-      final renewal = exam['renewal_applications'];
-      if (renewal != null) {
-        if (renewal['is_personnel'] == true) {
-          totalPersonnel++;
-        } else {
-          totalStudents++;
-        }
+      if (exam['musculoskeletal'] == false) {
+        healthConcerns['Musculoskeletal'] =
+            healthConcerns['Musculoskeletal']! + 1;
+      }
+      if (exam['lungs'] == false) {
+        healthConcerns['Lung Concerns'] = healthConcerns['Lung Concerns']! + 1;
+      }
+      if (exam['heart'] == false) {
+        healthConcerns['Heart Concerns'] = healthConcerns['Heart Concerns']! + 1;
+      }
+      if (exam['extremities'] == false) {
+        healthConcerns['Extremity Issues'] =
+            healthConcerns['Extremity Issues']! + 1;
+      }
+      if (exam['hearing'] == false) {
+        healthConcerns['Hearing Issues'] = healthConcerns['Hearing Issues']! + 1;
+      }
+      if (exam['vision'] == false) {
+        healthConcerns['Vision Issues'] = healthConcerns['Vision Issues']! + 1;
       }
     }
   }
 
-  void _processHealthConcerns(Map<String, dynamic> exam) {
-    final category = exam['bmi_category'] ?? 'Unknown';
-    bmiCategoryDistribution[category] =
-        (bmiCategoryDistribution[category] ?? 0) + 1;
-
-    if (exam['balance'] == false) healthConcerns['Balance Issues'] = healthConcerns['Balance Issues']! + 1;
-    if (exam['musculoskeletal'] == false) healthConcerns['Musculoskeletal'] = healthConcerns['Musculoskeletal']! + 1;
-    if (exam['lungs'] == false) healthConcerns['Lung Concerns'] = healthConcerns['Lung Concerns']! + 1;
-    if (exam['heart'] == false) healthConcerns['Heart Concerns'] = healthConcerns['Heart Concerns']! + 1;
-    if (exam['extremities'] == false) healthConcerns['Extremity Issues'] = healthConcerns['Extremity Issues']! + 1;
-    if (exam['hearing'] == false) healthConcerns['Hearing Issues'] = healthConcerns['Hearing Issues']! + 1;
-    if (exam['vision'] == false) healthConcerns['Vision Issues'] = healthConcerns['Vision Issues']! + 1;
-  }
-
-  Future<void> _loadHealthMetrics() async {}
-
+  // ─────────────────────────────────────────────
+  // UPCOMING APPOINTMENTS
+  // Now uses: medical_appointments_version2
+  // Joins borrowing_applications_version2 for name + campus
+  // ─────────────────────────────────────────────
   Future<void> _loadUpcomingAppointments() async {
     final now = DateTime.now();
     final today = now.toIso8601String().split('T').first;
@@ -199,11 +202,11 @@ class _HealthDashboardState extends State<HealthDashboard> {
         "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
 
     final response = await supabase
-        .from('medical_appointments')
+        .from('medical_appointments_version2')
         .select('''
-          id, appointment_date, appointment_time, status,
-          borrowing_applications!medical_appointments_application_id_fkey(
-            first_name, last_name, control_number, campus
+          id, appointment_date, appointment_time, status, appointment_type,
+          borrowing_applications_version2!medical_appointments_version2_application_id_fkey(
+            first_name, last_name, control_number, campus, user_type
           )
         ''')
         .eq('status', 'scheduled')
@@ -212,7 +215,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
         )
         .order('appointment_date')
         .order('appointment_time')
-        .limit(20); // fetch more then filter client-side
+        .limit(20); // fetch more, filter client-side
 
     // Filter by campus client-side
     final filtered = (response as List).where((appt) {
@@ -225,20 +228,34 @@ class _HealthDashboardState extends State<HealthDashboard> {
     upcomingAppointments = List<Map<String, dynamic>>.from(filtered);
   }
 
-  Future<void> _loadRenewalsData() async {
-    final renewalsResponse = await supabase
-        .from('renewal_applications')
-        .select('id')
+  // ─────────────────────────────────────────────
+  // APPLICATION COUNTS
+  // New vs Renewal — both live in borrowing_applications_version2.
+  // renewal_count > 0  → renewal
+  // renewal_count == 0 → new application
+  // ─────────────────────────────────────────────
+  Future<void> _loadApplicationCounts() async {
+    // All applications for this campus
+    final allApps = await supabase
+        .from('borrowing_applications_version2')
+        .select('id, renewal_count')
         .ilike('campus', userCampus!);
 
-    final newAppsResponse = await supabase
-        .from('borrowing_applications_version2')
-        .select('id')
-        .ilike('campus', userCampus!);
+    int renewals = 0;
+    int newApps = 0;
+
+    for (final app in (allApps as List)) {
+      final renewalCount = (app['renewal_count'] ?? 0) as int;
+      if (renewalCount > 0) {
+        renewals++;
+      } else {
+        newApps++;
+      }
+    }
 
     setState(() {
-      totalRenewals = renewalsResponse.length;
-      totalNewApplications = newAppsResponse.length;
+      totalRenewals = renewals;
+      totalNewApplications = newApps;
     });
   }
 
@@ -289,12 +306,14 @@ class _HealthDashboardState extends State<HealthDashboard> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         const CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFD32F2F)),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                              Color(0xFFD32F2F)),
                         ),
                         const SizedBox(height: 16),
                         Text(
                           'Loading health data...',
-                          style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                          style: TextStyle(
+                              color: Colors.grey[600], fontSize: 16),
                         ),
                       ],
                     ),
@@ -321,11 +340,16 @@ class _HealthDashboardState extends State<HealthDashboard> {
                               isDesktop
                                   ? IntrinsicHeight(
                                       child: Row(
-                                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
                                         children: [
-                                          Expanded(child: _buildHealthConcernsChart(isDesktop)),
+                                          Expanded(
+                                              child: _buildHealthConcernsChart(
+                                                  isDesktop)),
                                           const SizedBox(width: 24),
-                                          Expanded(child: _buildUpcomingAppointments(isDesktop)),
+                                          Expanded(
+                                              child: _buildUpcomingAppointments(
+                                                  isDesktop)),
                                         ],
                                       ),
                                     )
@@ -339,11 +363,16 @@ class _HealthDashboardState extends State<HealthDashboard> {
                               SizedBox(height: isDesktop ? 32 : 20),
                               isDesktop
                                   ? Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        Expanded(child: _buildBMICategoryChart(isDesktop)),
+                                        Expanded(
+                                            child:
+                                                _buildBMICategoryChart(isDesktop)),
                                         const SizedBox(width: 24),
-                                        Expanded(child: _buildResultChart(isDesktop)),
+                                        Expanded(
+                                            child:
+                                                _buildResultChart(isDesktop)),
                                       ],
                                     )
                                   : Column(
@@ -429,31 +458,36 @@ class _HealthDashboardState extends State<HealthDashboard> {
         'Total Examinations',
         totalExaminations.toString(),
         Icons.assignment,
-        const LinearGradient(colors: [Color(0xFF1976D2), Color(0xFF42A5F5)]),
+        const LinearGradient(
+            colors: [Color(0xFF1976D2), Color(0xFF42A5F5)]),
       ),
       _MetricData(
         'Students Examined',
         totalStudents.toString(),
         Icons.school,
-        const LinearGradient(colors: [Color(0xFF388E3C), Color(0xFF66BB6A)]),
+        const LinearGradient(
+            colors: [Color(0xFF388E3C), Color(0xFF66BB6A)]),
       ),
       _MetricData(
         'Personnel Examined',
         totalPersonnel.toString(),
         Icons.badge,
-        const LinearGradient(colors: [Color(0xFF7B1FA2), Color(0xFFBA68C8)]),
+        const LinearGradient(
+            colors: [Color(0xFF7B1FA2), Color(0xFFBA68C8)]),
       ),
       _MetricData(
         'Reassessments',
         reassessmentCount.toString(),
         Icons.warning,
-        const LinearGradient(colors: [Color(0xFFD32F2F), Color(0xFFE57373)]),
+        const LinearGradient(
+            colors: [Color(0xFFD32F2F), Color(0xFFE57373)]),
       ),
       _MetricData(
         'Total Renewals',
         totalRenewals.toString(),
         Icons.refresh_rounded,
-        const LinearGradient(colors: [Color(0xFF0288D1), Color(0xFF4FC3F7)]),
+        const LinearGradient(
+            colors: [Color(0xFF0288D1), Color(0xFF4FC3F7)]),
       ),
     ];
 
@@ -467,7 +501,8 @@ class _HealthDashboardState extends State<HealthDashboard> {
         childAspectRatio: isDesktop ? 1.6 : 1.5,
       ),
       itemCount: metrics.length,
-      itemBuilder: (context, index) => _buildMetricCard(metrics[index], isDesktop),
+      itemBuilder: (context, index) =>
+          _buildMetricCard(metrics[index], isDesktop),
     );
   }
 
@@ -495,7 +530,8 @@ class _HealthDashboardState extends State<HealthDashboard> {
               gradient: data.gradient,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(data.icon, color: Colors.white, size: isDesktop ? 24 : 18),
+            child: Icon(data.icon,
+                color: Colors.white, size: isDesktop ? 24 : 18),
           ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -536,7 +572,10 @@ class _HealthDashboardState extends State<HealthDashboard> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, 4)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 20,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -549,23 +588,33 @@ class _HealthDashboardState extends State<HealthDashboard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Health Concerns',
-                      style: TextStyle(fontSize: isDesktop ? 20 : 17, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A1A))),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 20 : 17,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF1A1A1A))),
                   const SizedBox(height: 4),
                   Text('Common medical issues identified',
-                      style: TextStyle(fontSize: isDesktop ? 14 : 12, color: Colors.grey[600])),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 14 : 12,
+                          color: Colors.grey[600])),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: const Color(0xFFFFEBEE), borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.medical_services_rounded, color: Color(0xFFD32F2F), size: 20),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFFEBEE),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.medical_services_rounded,
+                    color: Color(0xFFD32F2F), size: 20),
               ),
             ],
           ),
           SizedBox(height: isDesktop ? 24 : 16),
           ...healthConcerns.entries.map((entry) {
-            final maxValue = healthConcerns.values.fold(0, (a, b) => a > b ? a : b);
-            final percentage = maxValue > 0 ? (entry.value / maxValue).toDouble() : 0.0;
+            final maxValue =
+                healthConcerns.values.fold(0, (a, b) => a > b ? a : b);
+            final percentage =
+                maxValue > 0 ? (entry.value / maxValue).toDouble() : 0.0;
             return Padding(
               padding: const EdgeInsets.only(bottom: 14),
               child: Column(
@@ -575,9 +624,15 @@ class _HealthDashboardState extends State<HealthDashboard> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(entry.key,
-                          style: TextStyle(fontSize: isDesktop ? 13 : 12, fontWeight: FontWeight.w600, color: Colors.grey[800])),
+                          style: TextStyle(
+                              fontSize: isDesktop ? 13 : 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey[800])),
                       Text('${entry.value}',
-                          style: TextStyle(fontSize: isDesktop ? 13 : 12, fontWeight: FontWeight.bold, color: const Color(0xFFD32F2F))),
+                          style: TextStyle(
+                              fontSize: isDesktop ? 13 : 12,
+                              fontWeight: FontWeight.bold,
+                              color: const Color(0xFFD32F2F))),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -587,7 +642,8 @@ class _HealthDashboardState extends State<HealthDashboard> {
                       value: percentage,
                       minHeight: 8,
                       backgroundColor: Colors.grey[200],
-                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFD32F2F)),
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                          Color(0xFFD32F2F)),
                     ),
                   ),
                 ],
@@ -609,7 +665,10 @@ class _HealthDashboardState extends State<HealthDashboard> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, 4)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 20,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -622,16 +681,24 @@ class _HealthDashboardState extends State<HealthDashboard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Upcoming Appointments',
-                      style: TextStyle(fontSize: isDesktop ? 20 : 17, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A1A))),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 20 : 17,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF1A1A1A))),
                   const SizedBox(height: 4),
                   Text('Next scheduled check-ups',
-                      style: TextStyle(fontSize: isDesktop ? 14 : 12, color: Colors.grey[600])),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 14 : 12,
+                          color: Colors.grey[600])),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: const Color(0xFFE8F5E9), borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.calendar_today_rounded, color: Color(0xFF388E3C), size: 20),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.calendar_today_rounded,
+                    color: Color(0xFF388E3C), size: 20),
               ),
             ],
           ),
@@ -642,20 +709,30 @@ class _HealthDashboardState extends State<HealthDashboard> {
                 padding: const EdgeInsets.symmetric(vertical: 40),
                 child: Column(
                   children: [
-                    Icon(Icons.event_busy_rounded, size: 48, color: Colors.grey[300]),
+                    Icon(Icons.event_busy_rounded,
+                        size: 48, color: Colors.grey[300]),
                     const SizedBox(height: 12),
                     Text('No upcoming appointments',
-                        style: TextStyle(color: Colors.grey[500], fontSize: isDesktop ? 14 : 13)),
+                        style: TextStyle(
+                            color: Colors.grey[500],
+                            fontSize: isDesktop ? 14 : 13)),
                   ],
                 ),
               ),
             )
           else
             ...upcomingAppointments.map((appointment) {
-              final appData = appointment['borrowing_applications_version2'] ?? {};
-              final date = DateTime.tryParse(appointment['appointment_date'] ?? '') ?? DateTime.now();
+              final appData =
+                  appointment['borrowing_applications_version2'] ?? {};
+              final date =
+                  DateTime.tryParse(appointment['appointment_date'] ?? '') ??
+                      DateTime.now();
               final time = appointment['appointment_time'] ?? '00:00:00';
-              final timeStr = time.toString().length >= 5 ? time.toString().substring(0, 5) : time.toString();
+              final timeStr = time.toString().length >= 5
+                  ? time.toString().substring(0, 5)
+                  : time.toString();
+              final appointmentType =
+                  (appointment['appointment_type'] ?? 'new').toString();
 
               return Container(
                 margin: const EdgeInsets.only(bottom: 12),
@@ -671,17 +748,27 @@ class _HealthDashboardState extends State<HealthDashboard> {
                       width: isDesktop ? 56 : 48,
                       height: isDesktop ? 56 : 48,
                       decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [Color(0xFF388E3C), Color(0xFF66BB6A)]),
+                        gradient: const LinearGradient(
+                            colors: [Color(0xFF388E3C), Color(0xFF66BB6A)]),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(date.day.toString(),
-                              style: TextStyle(color: Colors.white, fontSize: isDesktop ? 20 : 16, fontWeight: FontWeight.bold)),
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: isDesktop ? 20 : 16,
+                                  fontWeight: FontWeight.bold)),
                           Text(
-                            ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.month - 1],
-                            style: TextStyle(color: Colors.white, fontSize: isDesktop ? 11 : 10, fontWeight: FontWeight.w500),
+                            [
+                              'Jan','Feb','Mar','Apr','May','Jun',
+                              'Jul','Aug','Sep','Oct','Nov','Dec'
+                            ][date.month - 1],
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: isDesktop ? 11 : 10,
+                                fontWeight: FontWeight.w500),
                           ),
                         ],
                       ),
@@ -693,23 +780,57 @@ class _HealthDashboardState extends State<HealthDashboard> {
                         children: [
                           Text(
                             '${appData['first_name'] ?? ''} ${appData['last_name'] ?? ''}',
-                            style: TextStyle(fontSize: isDesktop ? 15 : 14, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A1A)),
+                            style: TextStyle(
+                                fontSize: isDesktop ? 15 : 14,
+                                fontWeight: FontWeight.bold,
+                                color: const Color(0xFF1A1A1A)),
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 4),
                           Row(
                             children: [
-                              Icon(Icons.access_time_rounded, size: 13, color: Colors.grey[600]),
+                              Icon(Icons.access_time_rounded,
+                                  size: 13, color: Colors.grey[600]),
                               const SizedBox(width: 4),
-                              Text(timeStr, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                              Text(timeStr,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600])),
                               const SizedBox(width: 12),
-                              Icon(Icons.badge_rounded, size: 13, color: Colors.grey[600]),
+                              Icon(Icons.badge_rounded,
+                                  size: 13, color: Colors.grey[600]),
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
                                   appData['control_number'] ?? 'N/A',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600]),
                                   overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              // Show appointment type badge
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: appointmentType == 'renewal'
+                                      ? const Color(0xFFE3F2FD)
+                                      : const Color(0xFFE8F5E9),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  appointmentType == 'renewal'
+                                      ? 'Renewal'
+                                      : 'New',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: appointmentType == 'renewal'
+                                        ? const Color(0xFF0288D1)
+                                        : const Color(0xFF388E3C),
+                                  ),
                                 ),
                               ),
                             ],
@@ -736,7 +857,10 @@ class _HealthDashboardState extends State<HealthDashboard> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, 4)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 20,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -749,16 +873,24 @@ class _HealthDashboardState extends State<HealthDashboard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('BMI Categories',
-                      style: TextStyle(fontSize: isDesktop ? 20 : 17, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A1A))),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 20 : 17,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF1A1A1A))),
                   const SizedBox(height: 4),
                   Text('Student health distribution',
-                      style: TextStyle(fontSize: isDesktop ? 14 : 12, color: Colors.grey[600])),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 14 : 12,
+                          color: Colors.grey[600])),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.pie_chart_rounded, color: Color(0xFFF57C00), size: 20),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFFF3E0),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.pie_chart_rounded,
+                    color: Color(0xFFF57C00), size: 20),
               ),
             ],
           ),
@@ -769,10 +901,13 @@ class _HealthDashboardState extends State<HealthDashboard> {
                     padding: const EdgeInsets.symmetric(vertical: 40),
                     child: Column(
                       children: [
-                        Icon(Icons.donut_large_rounded, size: 48, color: Colors.grey[300]),
+                        Icon(Icons.donut_large_rounded,
+                            size: 48, color: Colors.grey[300]),
                         const SizedBox(height: 12),
                         Text('No BMI data available',
-                            style: TextStyle(color: Colors.grey[500], fontSize: isDesktop ? 14 : 13)),
+                            style: TextStyle(
+                                color: Colors.grey[500],
+                                fontSize: isDesktop ? 14 : 13)),
                       ],
                     ),
                   ),
@@ -816,12 +951,18 @@ class _HealthDashboardState extends State<HealthDashboard> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 12, height: 12,
-              decoration: BoxDecoration(color: entry.value, borderRadius: BorderRadius.circular(3)),
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                  color: entry.value,
+                  borderRadius: BorderRadius.circular(3)),
             ),
             const SizedBox(width: 6),
             Text('${entry.key} ($count)',
-                style: TextStyle(fontSize: isDesktop ? 12 : 11, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+                style: TextStyle(
+                    fontSize: isDesktop ? 12 : 11,
+                    color: Colors.grey[700],
+                    fontWeight: FontWeight.w500)),
           ],
         );
       }).toList(),
@@ -836,10 +977,12 @@ class _HealthDashboardState extends State<HealthDashboard> {
       'Obese': const Color(0xFFEF5350),
     };
 
-    final total = bmiCategoryDistribution.values.fold(0, (a, b) => a + b);
+    final total =
+        bmiCategoryDistribution.values.fold(0, (a, b) => a + b);
 
     return bmiCategoryDistribution.entries.map((entry) {
-      final percentage = total > 0 ? (entry.value / total * 100) : 0;
+      final percentage =
+          total > 0 ? (entry.value / total * 100) : 0;
       return PieChartSectionData(
         value: entry.value.toDouble(),
         title: '${percentage.toStringAsFixed(1)}%',
@@ -855,10 +998,15 @@ class _HealthDashboardState extends State<HealthDashboard> {
   }
 
   // ─────────────────────────────────────────────
-  // RENEWALS vs NEW APPLICATIONS
+  // RENEWALS vs NEW APPLICATIONS BAR CHART
   // ─────────────────────────────────────────────
   Widget _buildResultChart(bool isDesktop) {
-    final maxY = (totalNewApplications > totalRenewals ? totalNewApplications : totalRenewals).toDouble() * 1.2;
+    final maxY =
+        (totalNewApplications > totalRenewals
+                ? totalNewApplications
+                : totalRenewals)
+            .toDouble() *
+        1.2;
 
     return Container(
       padding: EdgeInsets.all(isDesktop ? 28 : 20),
@@ -866,7 +1014,10 @@ class _HealthDashboardState extends State<HealthDashboard> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, 4)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 20,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -879,16 +1030,24 @@ class _HealthDashboardState extends State<HealthDashboard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Renewals vs New Applications',
-                      style: TextStyle(fontSize: isDesktop ? 20 : 17, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A1A))),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 20 : 17,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF1A1A1A))),
                   const SizedBox(height: 4),
                   Text('Application type comparison',
-                      style: TextStyle(fontSize: isDesktop ? 14 : 12, color: Colors.grey[600])),
+                      style: TextStyle(
+                          fontSize: isDesktop ? 14 : 12,
+                          color: Colors.grey[600])),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: const Color(0xFFE3F2FD), borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.bar_chart_rounded, color: Color(0xFF0288D1), size: 20),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFE3F2FD),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.bar_chart_rounded,
+                    color: Color(0xFF0288D1), size: 20),
               ),
             ],
           ),
@@ -926,12 +1085,18 @@ class _HealthDashboardState extends State<HealthDashboard> {
                           case 0:
                             return Padding(
                               padding: const EdgeInsets.only(top: 8),
-                              child: Text('New', style: TextStyle(fontSize: isDesktop ? 13 : 12, fontWeight: FontWeight.w600)),
+                              child: Text('New',
+                                  style: TextStyle(
+                                      fontSize: isDesktop ? 13 : 12,
+                                      fontWeight: FontWeight.w600)),
                             );
                           case 1:
                             return Padding(
                               padding: const EdgeInsets.only(top: 8),
-                              child: Text('Renewals', style: TextStyle(fontSize: isDesktop ? 13 : 12, fontWeight: FontWeight.w600)),
+                              child: Text('Renewals',
+                                  style: TextStyle(
+                                      fontSize: isDesktop ? 13 : 12,
+                                      fontWeight: FontWeight.w600)),
                             );
                           default:
                             return const SizedBox();
@@ -945,17 +1110,22 @@ class _HealthDashboardState extends State<HealthDashboard> {
                       reservedSize: 32,
                       getTitlesWidget: (value, meta) => Text(
                         value.toInt().toString(),
-                        style: TextStyle(fontSize: isDesktop ? 11 : 10, color: Colors.grey[600]),
+                        style: TextStyle(
+                            fontSize: isDesktop ? 11 : 10,
+                            color: Colors.grey[600]),
                       ),
                     ),
                   ),
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
                 ),
                 gridData: FlGridData(
                   show: true,
                   drawVerticalLine: false,
-                  getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey[200]!, strokeWidth: 1),
+                  getDrawingHorizontalLine: (value) =>
+                      FlLine(color: Colors.grey[200]!, strokeWidth: 1),
                 ),
                 borderData: FlBorderData(show: false),
               ),
@@ -965,9 +1135,11 @@ class _HealthDashboardState extends State<HealthDashboard> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _buildLegendDot(const Color(0xFF388E3C), 'New Applications ($totalNewApplications)', isDesktop),
+              _buildLegendDot(const Color(0xFF388E3C),
+                  'New Applications ($totalNewApplications)', isDesktop),
               const SizedBox(width: 24),
-              _buildLegendDot(const Color(0xFF0288D1), 'Renewals ($totalRenewals)', isDesktop),
+              _buildLegendDot(const Color(0xFF0288D1),
+                  'Renewals ($totalRenewals)', isDesktop),
             ],
           ),
         ],
@@ -979,9 +1151,17 @@ class _HealthDashboardState extends State<HealthDashboard> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        Container(
+            width: 12,
+            height: 12,
+            decoration:
+                BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 6),
-        Text(label, style: TextStyle(fontSize: isDesktop ? 12 : 11, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+        Text(label,
+            style: TextStyle(
+                fontSize: isDesktop ? 12 : 11,
+                color: Colors.grey[700],
+                fontWeight: FontWeight.w500)),
       ],
     );
   }
