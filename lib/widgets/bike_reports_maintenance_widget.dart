@@ -46,10 +46,11 @@ class BikeReportsMaintenanceWidgetState
   int resolvedCount = 0;
 
   // ── Maintenance state
+  // Valid DB statuses: available, reserved, damaged, missing_bike, maintenance, in_use
   String selectedMaintenanceStatus = 'all';
   List<Map<String, dynamic>> maintenanceBikes = [];
   int allBikesCount = 0;
-  int forMaintenanceCount = 0;
+  int damagedCount = 0;      // was forMaintenanceCount — maps to 'damaged' in DB
   int maintenanceCount = 0;
   int availableCount = 0;
 
@@ -58,6 +59,7 @@ class BikeReportsMaintenanceWidgetState
   static const _blue = Color(0xFF1565C0);
   static const _orange = Color(0xFFF57C00);
   static const _green = Color(0xFF388E3C);
+  static const _purple = Color(0xFF6A1B9A);
 
   // ─────────────────────────────────────────────
   // LIFECYCLE
@@ -117,17 +119,41 @@ class BikeReportsMaintenanceWidgetState
             widget.campus.toLowerCase();
       }).toList();
 
-      final forMaintenance = await supabase
-          .from('bikes').select('id')
-          .eq('status', 'for_maintenance')
+      // Valid DB statuses: available, reserved, damaged, missing_bike, maintenance, in_use
+      final damaged = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'damaged')
           .ilike('campus', widget.campus);
+
       final maintenance = await supabase
-          .from('bikes').select('id')
+          .from('bikes')
+          .select('id')
           .eq('status', 'maintenance')
           .ilike('campus', widget.campus);
+
       final available = await supabase
-          .from('bikes').select('id')
+          .from('bikes')
+          .select('id')
           .eq('status', 'available')
+          .ilike('campus', widget.campus);
+
+      final reserved = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'reserved')
+          .ilike('campus', widget.campus);
+
+      final inUse = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'in_use')
+          .ilike('campus', widget.campus);
+
+      final missingBike = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'missing_bike')
           .ilike('campus', widget.campus);
 
       if (mounted) {
@@ -138,11 +164,15 @@ class BikeReportsMaintenanceWidgetState
               campusReports.where((r) => r['status'] == 'in_progress').length;
           resolvedCount =
               campusReports.where((r) => r['status'] == 'resolved').length;
-          forMaintenanceCount = (forMaintenance as List).length;
+          damagedCount = (damaged as List).length;
           maintenanceCount = (maintenance as List).length;
           availableCount = (available as List).length;
-          allBikesCount =
-              forMaintenanceCount + maintenanceCount + availableCount;
+          allBikesCount = damagedCount +
+              maintenanceCount +
+              availableCount +
+              (reserved as List).length +
+              (inUse as List).length +
+              (missingBike as List).length;
         });
       }
     } catch (e) {
@@ -162,7 +192,8 @@ class BikeReportsMaintenanceWidgetState
       for (final r in (response as List)) {
         if (r['bike_id'] == null) continue;
         final bikeRes = await supabase
-            .from('bikes').select('campus')
+            .from('bikes')
+            .select('campus')
             .eq('id', r['bike_id'])
             .maybeSingle();
         if (bikeRes == null) continue;
@@ -181,11 +212,13 @@ class BikeReportsMaintenanceWidgetState
     try {
       final response = selectedMaintenanceStatus == 'all'
           ? await supabase
-              .from('bikes').select('*')
+              .from('bikes')
+              .select('*')
               .ilike('campus', widget.campus)
               .order('updated_at', ascending: false)
           : await supabase
-              .from('bikes').select('*')
+              .from('bikes')
+              .select('*')
               .eq('status', selectedMaintenanceStatus)
               .ilike('campus', widget.campus)
               .order('updated_at', ascending: false);
@@ -225,93 +258,93 @@ class BikeReportsMaintenanceWidgetState
   }
 
   Future<void> _runExport(DateTime from, DateTime to) async {
-  // ── Filter data by date range ─────────────────
-  final filteredReports = reports.where((r) {
+    // ── Filter data by date range ─────────────────
+    final filteredReports = reports.where((r) {
+      try {
+        final d = DateTime.parse(r['created_at'].toString());
+        return !d.isBefore(from) &&
+            !d.isAfter(to.add(const Duration(days: 1)));
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+
+    // Fetch ALL bikes for the campus for export
+    List<Map<String, dynamic>> allBikes;
     try {
-      final d = DateTime.parse(r['created_at'].toString());
-      return !d.isBefore(from) &&
-          !d.isAfter(to.add(const Duration(days: 1)));
+      final res = await supabase
+          .from('bikes')
+          .select('*')
+          .ilike('campus', widget.campus)
+          .order('updated_at', ascending: false);
+      allBikes = List<Map<String, dynamic>>.from(res);
     } catch (_) {
-      return false;
+      allBikes = maintenanceBikes;
     }
-  }).toList();
 
-  // For maintenance we fetch ALL bikes for the campus regardless of
-  // current tab filter so the export is always complete.
-  List<Map<String, dynamic>> allBikes;
-  try {
-    final res = await supabase
-        .from('bikes').select('*')
-        .ilike('campus', widget.campus)
-        .order('updated_at', ascending: false);
-    allBikes = List<Map<String, dynamic>>.from(res);
-  } catch (_) {
-    allBikes = maintenanceBikes;
-  }
+    final filteredBikes = allBikes.where((b) {
+      try {
+        final d = DateTime.parse(b['updated_at'].toString());
+        return !d.isBefore(from) &&
+            !d.isAfter(to.add(const Duration(days: 1)));
+      } catch (_) {
+        return false;
+      }
+    }).toList();
 
-  final filteredBikes = allBikes.where((b) {
-    try {
-      final d = DateTime.parse(b['updated_at'].toString());
-      return !d.isBefore(from) &&
-          !d.isAfter(to.add(const Duration(days: 1)));
-    } catch (_) {
-      return false;
-    }
-  }).toList();
-
-  // ── Build & download PDF ──────────────────────
-  final pdfBytes = await _buildPdf(
-    campus: widget.campus,
-    from: from,
-    to: to,
-    reports: filteredReports,
-    bikes: filteredBikes,
-  );
-
-  final fileName =
-      'PedalHub_Report_${widget.campus.toUpperCase()}_'
-      '${DateFormat('yyyyMMdd').format(from)}_'
-      '${DateFormat('yyyyMMdd').format(to)}.pdf';
-
-  // ── Download for web ──────────────────────────
-  final blob = html.Blob([pdfBytes], 'application/pdf');
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  html.AnchorElement(href: url)
-  ..setAttribute('download', fileName)
-  ..click();
-  html.Url.revokeObjectUrl(url);
-
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        backgroundColor: _green,
-        duration: const Duration(seconds: 5),
-        content: Row(children: [
-          const Icon(Icons.check_circle_rounded,
-              color: Colors.white, size: 18),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('PDF downloaded successfully!',
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white)),
-                Text(fileName,
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.white70),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-        ]),
-      ),
+    // ── Build & download PDF ──────────────────────
+    final pdfBytes = await _buildPdf(
+      campus: widget.campus,
+      from: from,
+      to: to,
+      reports: filteredReports,
+      bikes: filteredBikes,
     );
+
+    final fileName =
+        'PedalHub_Report_${widget.campus.toUpperCase()}_'
+        '${DateFormat('yyyyMMdd').format(from)}_'
+        '${DateFormat('yyyyMMdd').format(to)}.pdf';
+
+    // ── Download for web ──────────────────────────
+    final blob = html.Blob([pdfBytes], 'application/pdf');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    html.AnchorElement(href: url)
+      ..setAttribute('download', fileName)
+      ..click();
+    html.Url.revokeObjectUrl(url);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: _green,
+          duration: const Duration(seconds: 5),
+          content: Row(children: [
+            const Icon(Icons.check_circle_rounded,
+                color: Colors.white, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('PDF downloaded successfully!',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                  Text(fileName,
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.white70),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+          ]),
+        ),
+      );
+    }
   }
-}
 
   // ─────────────────────────────────────────────
   // PDF BUILDER
@@ -335,6 +368,7 @@ class BikeReportsMaintenanceWidgetState
     const pBlue = PdfColor.fromInt(0xFF1565C0);
     const pOrange = PdfColor.fromInt(0xFFF57C00);
     const pGreen = PdfColor.fromInt(0xFF388E3C);
+    const pPurple = PdfColor.fromInt(0xFF6A1B9A);
     const pGrey100 = PdfColor.fromInt(0xFFF5F7FA);
     const pGrey300 = PdfColor.fromInt(0xFFE0E0E0);
     const pGrey600 = PdfColor.fromInt(0xFF757575);
@@ -350,12 +384,12 @@ class BikeReportsMaintenanceWidgetState
     final resolved =
         reports.where((r) => r['status'] == 'resolved').length;
     final totalBikes = bikes.length;
-    final availB =
-        bikes.where((b) => b['status'] == 'available').length;
-    final forMaintB =
-        bikes.where((b) => b['status'] == 'for_maintenance').length;
-    final maintB =
-        bikes.where((b) => b['status'] == 'maintenance').length;
+    final availB = bikes.where((b) => b['status'] == 'available').length;
+    final damagedB = bikes.where((b) => b['status'] == 'damaged').length;
+    final maintB = bikes.where((b) => b['status'] == 'maintenance').length;
+    final inUseB = bikes.where((b) => b['status'] == 'in_use').length;
+    final reservedB = bikes.where((b) => b['status'] == 'reserved').length;
+    final missingB = bikes.where((b) => b['status'] == 'missing_bike').length;
 
     // ── Shared builder helpers ────────────────────
 
@@ -444,7 +478,7 @@ class BikeReportsMaintenanceWidgetState
         );
 
     pw.Widget sectionTitle(String label, PdfColor color,
-        {String? sub}) =>
+            {String? sub}) =>
         pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
@@ -573,50 +607,87 @@ class BikeReportsMaintenanceWidgetState
 
     PdfColor rStatusColor(String s) {
       switch (s) {
-        case 'submitted': return pRed;
-        case 'under_review': return pBlue;
-        case 'in_progress': return pOrange;
-        case 'resolved': return pGreen;
-        default: return pGrey600;
+        case 'submitted':
+          return pRed;
+        case 'under_review':
+          return pBlue;
+        case 'in_progress':
+          return pOrange;
+        case 'resolved':
+          return pGreen;
+        default:
+          return pGrey600;
       }
     }
 
     String rStatusLabel(String s) {
       switch (s) {
-        case 'submitted': return 'New';
-        case 'under_review': return 'Under Review';
-        case 'in_progress': return 'In Progress';
-        case 'resolved': return 'Resolved';
-        case 'rejected': return 'Rejected';
-        default: return s.replaceAll('_', ' ');
+        case 'submitted':
+          return 'New';
+        case 'under_review':
+          return 'Under Review';
+        case 'in_progress':
+          return 'In Progress';
+        case 'resolved':
+          return 'Resolved';
+        case 'rejected':
+          return 'Rejected';
+        default:
+          return s.replaceAll('_', ' ');
       }
     }
 
+    // Fixed to use actual DB status values
     PdfColor bStatusColor(String s) {
       switch (s) {
-        case 'available': return pGreen;
-        case 'for_maintenance': return pRed;
-        case 'maintenance': return pOrange;
-        default: return pGrey600;
+        case 'available':
+          return pGreen;
+        case 'damaged':
+          return pRed;
+        case 'maintenance':
+          return pOrange;
+        case 'in_use':
+          return pBlue;
+        case 'reserved':
+          return pPurple;
+        case 'missing_bike':
+          return pGrey600;
+        default:
+          return pGrey600;
       }
     }
 
     String bStatusLabel(String s) {
       switch (s) {
-        case 'available': return 'Available';
-        case 'for_maintenance': return 'For Maintenance';
-        case 'maintenance': return 'Being Fixed';
-        default: return s.replaceAll('_', ' ');
+        case 'available':
+          return 'Available';
+        case 'damaged':
+          return 'Damaged';
+        case 'maintenance':
+          return 'Being Fixed';
+        case 'in_use':
+          return 'In Use';
+        case 'reserved':
+          return 'Reserved';
+        case 'missing_bike':
+          return 'Missing';
+        default:
+          return s.replaceAll('_', ' ');
       }
     }
 
     PdfColor priorityColor(String p) {
       switch (p) {
-        case 'urgent': return pRed;
-        case 'high': return pOrange;
-        case 'medium': return const PdfColor.fromInt(0xFFF9A825);
-        case 'low': return pGreen;
-        default: return pGrey600;
+        case 'urgent':
+          return pRed;
+        case 'high':
+          return pOrange;
+        case 'medium':
+          return const PdfColor.fromInt(0xFFF9A825);
+        case 'low':
+          return pGreen;
+        default:
+          return pGrey600;
       }
     }
 
@@ -643,35 +714,35 @@ class BikeReportsMaintenanceWidgetState
                           color: pRed)),
                   pw.SizedBox(height: 7),
                   pw.Row(children: [
-                    summaryCard('Total Reports',
-                        '$totalReports', pBlack),
+                    summaryCard('Total Reports', '$totalReports', pBlack),
                     summaryCard('New', '$newReports', pRed),
-                    summaryCard(
-                        'In Progress', '$inProg', pOrange),
+                    summaryCard('In Progress', '$inProg', pOrange),
                     summaryCard('Resolved', '$resolved', pGreen),
                   ]),
                   pw.SizedBox(height: 14),
-                  pw.Text('Maintenance',
+                  pw.Text('Bike Fleet Status',
                       style: pw.TextStyle(
                           fontSize: 9,
                           fontWeight: pw.FontWeight.bold,
                           color: pOrange)),
                   pw.SizedBox(height: 7),
                   pw.Row(children: [
-                    summaryCard(
-                        'Total Bikes', '$totalBikes', pBlack),
-                    summaryCard(
-                        'Available', '$availB', pGreen),
-                    summaryCard(
-                        'For Maintenance', '$forMaintB', pRed),
-                    summaryCard(
-                        'Being Fixed', '$maintB', pOrange),
+                    summaryCard('Total Bikes', '$totalBikes', pBlack),
+                    summaryCard('Available', '$availB', pGreen),
+                    summaryCard('Damaged', '$damagedB', pRed),
+                    summaryCard('Being Fixed', '$maintB', pOrange),
+                  ]),
+                  pw.SizedBox(height: 7),
+                  pw.Row(children: [
+                    summaryCard('In Use', '$inUseB', pBlue),
+                    summaryCard('Reserved', '$reservedB', pPurple),
+                    summaryCard('Missing', '$missingB', pGrey600),
+                    pw.Expanded(child: pw.SizedBox()),
                   ]),
                   pw.SizedBox(height: 24),
                   sectionTitle('Status Flow Reference', pBlack),
                   pw.Row(
-                    crossAxisAlignment:
-                        pw.CrossAxisAlignment.start,
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                       pw.Expanded(
                         child: pw.Column(
@@ -681,8 +752,7 @@ class BikeReportsMaintenanceWidgetState
                             pw.Text('Bike Reports Flow',
                                 style: pw.TextStyle(
                                     fontSize: 9,
-                                    fontWeight:
-                                        pw.FontWeight.bold,
+                                    fontWeight: pw.FontWeight.bold,
                                     color: pRed)),
                             pw.SizedBox(height: 6),
                             flowStep('Submitted',
@@ -703,17 +773,17 @@ class BikeReportsMaintenanceWidgetState
                           crossAxisAlignment:
                               pw.CrossAxisAlignment.start,
                           children: [
-                            pw.Text('Bike Maintenance Flow',
+                            pw.Text('Bike Status Flow',
                                 style: pw.TextStyle(
                                     fontSize: 9,
-                                    fontWeight:
-                                        pw.FontWeight.bold,
+                                    fontWeight: pw.FontWeight.bold,
                                     color: pOrange)),
                             pw.SizedBox(height: 6),
                             flowStep('Available',
                                 'Ready for borrowing', pGreen),
-                            flowStep('For Maintenance',
-                                'Flagged, awaiting worker', pRed),
+                            flowStep('Damaged',
+                                'Flagged as damaged, needs repair',
+                                pRed),
                             flowStep('Maintenance',
                                 'Worker assigned, being fixed',
                                 pOrange),
@@ -746,9 +816,8 @@ class BikeReportsMaintenanceWidgetState
                   fontSize: 8,
                   fontWeight: pw.FontWeight.bold,
                   color: pBlack)),
-          pw.Text('Bike #${r['bike_number'] ?? 'N/A'}',
-              style:
-                  pw.TextStyle(fontSize: 8, color: pBlack)),
+          pw.Text('${r['bike_number'] ?? 'N/A'}',
+              style: pw.TextStyle(fontSize: 8, color: pBlack)),
           pw.Text(
               (r['issue_type'] ?? 'other')
                   .toString()
@@ -758,21 +827,18 @@ class BikeReportsMaintenanceWidgetState
                       ? w
                       : w[0].toUpperCase() + w.substring(1))
                   .join(' '),
-              style:
-                  pw.TextStyle(fontSize: 8, color: pBlack)),
-          statusBadge(rStatusLabel(status),
-              rStatusColor(status)),
-          statusBadge(
-              priority.toUpperCase(), priorityColor(priority)),
+              style: pw.TextStyle(fontSize: 8, color: pBlack)),
+          statusBadge(rStatusLabel(status), rStatusColor(status)),
+          statusBadge(priority.toUpperCase(), priorityColor(priority)),
           pw.Text(fmtDate(r['created_at']),
-              style:
-                  pw.TextStyle(fontSize: 7, color: pGrey600)),
+              style: pw.TextStyle(fontSize: 7, color: pGrey600)),
           pw.Text(
               desc.length > 60
                   ? '${desc.substring(0, 60)}...'
-                  : desc.isEmpty ? '—' : desc,
-              style:
-                  pw.TextStyle(fontSize: 7, color: pGrey600)),
+                  : desc.isEmpty
+                      ? '—'
+                      : desc,
+              style: pw.TextStyle(fontSize: 7, color: pGrey600)),
         ];
       }).toList();
 
@@ -781,26 +847,27 @@ class BikeReportsMaintenanceWidgetState
         margin: pw.EdgeInsets.zero,
         header: (ctx) => ctx.pageNumber == 1
             ? header()
-            : repeatHeader(
-                'Bike Reports (continued)', pRed),
-        footer: (ctx) =>
-            pageFooter(ctx.pageNumber + 1),
+            : repeatHeader('Bike Reports (continued)', pRed),
+        footer: (ctx) => pageFooter(ctx.pageNumber + 1),
         build: (ctx) => [
           pw.Padding(
             padding: const pw.EdgeInsets.symmetric(
                 horizontal: 40, vertical: 20),
             child: pw.Column(
-              crossAxisAlignment:
-                  pw.CrossAxisAlignment.start,
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
                 sectionTitle('Bike Reports Detail', pRed,
                     sub:
                         '$totalReports report(s) in selected date range'),
                 pw.TableHelper.fromTextArray(
                   headers: [
-                    'Reporter', 'Bike', 'Issue Type',
-                    'Status', 'Priority',
-                    'Date Reported', 'Description',
+                    'Reporter',
+                    'Bike',
+                    'Issue Type',
+                    'Status',
+                    'Priority',
+                    'Date Reported',
+                    'Description',
                   ],
                   data: rRows,
                   headerStyle: pw.TextStyle(
@@ -819,8 +886,8 @@ class BikeReportsMaintenanceWidgetState
                     5: pw.Alignment.centerLeft,
                     6: pw.Alignment.centerLeft,
                   },
-                  cellStyle: pw.TextStyle(
-                      fontSize: 8, color: pBlack),
+                  cellStyle:
+                      pw.TextStyle(fontSize: 8, color: pBlack),
                   rowDecoration: const pw.BoxDecoration(
                       color: PdfColors.white),
                   oddRowDecoration:
@@ -844,37 +911,33 @@ class BikeReportsMaintenanceWidgetState
       ));
     }
 
-    // ── PAGE — Maintenance table ──────────────────
+    // ── PAGE — Maintenance/Fleet table ──────────────────
     if (bikes.isNotEmpty) {
       final bRows = bikes.map((b) {
         final status = b['status'] ?? 'available';
         final notes = b['maintenance_notes']?.toString() ?? '';
         return [
-          pw.Text('Bike #${b['bike_number'] ?? 'N/A'}',
+          pw.Text('${b['bike_number'] ?? 'N/A'}',
               style: pw.TextStyle(
                   fontSize: 8,
                   fontWeight: pw.FontWeight.bold,
                   color: pBlack)),
-          statusBadge(
-              bStatusLabel(status), bStatusColor(status)),
+          statusBadge(bStatusLabel(status), bStatusColor(status)),
           pw.Text(b['maintenance_worker'] ?? '—',
-              style:
-                  pw.TextStyle(fontSize: 8, color: pBlack)),
+              style: pw.TextStyle(fontSize: 8, color: pBlack)),
           pw.Text(
               notes.length > 50
                   ? '${notes.substring(0, 50)}...'
-                  : notes.isEmpty ? '—' : notes,
-              style:
-                  pw.TextStyle(fontSize: 7, color: pGrey600)),
+                  : notes.isEmpty
+                      ? '—'
+                      : notes,
+              style: pw.TextStyle(fontSize: 7, color: pGrey600)),
           pw.Text(fmtDate(b['maintenance_started_at']),
-              style:
-                  pw.TextStyle(fontSize: 7, color: pGrey600)),
+              style: pw.TextStyle(fontSize: 7, color: pGrey600)),
           pw.Text(fmtDate(b['last_maintenance_date']),
-              style:
-                  pw.TextStyle(fontSize: 7, color: pGrey600)),
+              style: pw.TextStyle(fontSize: 7, color: pGrey600)),
           pw.Text('${b['total_rides'] ?? 0}',
-              style:
-                  pw.TextStyle(fontSize: 8, color: pBlack)),
+              style: pw.TextStyle(fontSize: 8, color: pBlack)),
         ];
       }).toList();
 
@@ -883,26 +946,26 @@ class BikeReportsMaintenanceWidgetState
         margin: pw.EdgeInsets.zero,
         header: (ctx) => ctx.pageNumber == 1
             ? header()
-            : repeatHeader(
-                'Maintenance (continued)', pOrange),
-        footer: (ctx) =>
-            pageFooter(ctx.pageNumber + 1),
+            : repeatHeader('Fleet Status (continued)', pOrange),
+        footer: (ctx) => pageFooter(ctx.pageNumber + 1),
         build: (ctx) => [
           pw.Padding(
             padding: const pw.EdgeInsets.symmetric(
                 horizontal: 40, vertical: 20),
             child: pw.Column(
-              crossAxisAlignment:
-                  pw.CrossAxisAlignment.start,
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                sectionTitle('Maintenance Detail', pOrange,
+                sectionTitle('Bike Fleet Detail', pOrange,
                     sub:
                         '$totalBikes bike(s) in selected date range'),
                 pw.TableHelper.fromTextArray(
                   headers: [
-                    'Bike No.', 'Status',
-                    'Worker', 'Notes',
-                    'Started At', 'Last Maintenance',
+                    'Bike No.',
+                    'Status',
+                    'Worker',
+                    'Notes',
+                    'Started At',
+                    'Last Maintenance',
                     'Rides',
                   ],
                   data: bRows,
@@ -922,8 +985,8 @@ class BikeReportsMaintenanceWidgetState
                     5: pw.Alignment.centerLeft,
                     6: pw.Alignment.center,
                   },
-                  cellStyle: pw.TextStyle(
-                      fontSize: 8, color: pBlack),
+                  cellStyle:
+                      pw.TextStyle(fontSize: 8, color: pBlack),
                   rowDecoration: const pw.BoxDecoration(
                       color: PdfColors.white),
                   oddRowDecoration:
@@ -967,12 +1030,11 @@ class BikeReportsMaintenanceWidgetState
     }
   }
 
-  Future<void> _markInProgress(
-      Map<String, dynamic> report) async {
+  Future<void> _markInProgress(Map<String, dynamic> report) async {
     final ok = await _confirmDialog(
       title: 'Set For Maintenance',
       message:
-          'Bike #${report['bike_number']} will be marked "for maintenance" and this report set to in progress.',
+          '${report['bike_number']} will be marked "damaged" and this report set to in progress.',
       confirmLabel: 'Confirm',
       confirmColor: _orange,
     );
@@ -983,22 +1045,22 @@ class BikeReportsMaintenanceWidgetState
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', report['id']);
       if (report['bike_id'] != null) {
+        // Use 'damaged' — valid DB status for bikes needing repair
         await supabase.from('bikes').update({
-          'status': 'for_maintenance',
+          'status': 'damaged',
           'maintenance_started_at':
               DateTime.now().toIso8601String(),
           'updated_at': DateTime.now().toIso8601String(),
         }).eq('id', report['bike_id']);
       }
-      _showSnack('Bike set for maintenance.', _orange);
+      _showSnack('Bike marked as damaged, pending maintenance.', _orange);
       await _loadAll();
     } catch (e) {
       _showError(e);
     }
   }
 
-  Future<void> _resolveReport(
-      Map<String, dynamic> report) async {
+  Future<void> _resolveReport(Map<String, dynamic> report) async {
     final ctrl = TextEditingController();
     final notes = await _remarksDialog(ctrl,
         title: 'Resolution Notes (optional)');
@@ -1045,7 +1107,7 @@ class BikeReportsMaintenanceWidgetState
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-                'Assign Worker — Bike #${bike['bike_number']}',
+                'Assign Worker — ${bike['bike_number']}',
                 style: const TextStyle(
                     fontWeight: FontWeight.bold, fontSize: 15)),
           ),
@@ -1106,6 +1168,7 @@ class BikeReportsMaintenanceWidgetState
 
     if (result == null || result['worker']!.isEmpty) return;
     try {
+      // Use 'maintenance' — valid DB status for bikes being actively fixed
       await supabase.from('bikes').update({
         'status': 'maintenance',
         'maintenance_worker': result['worker'],
@@ -1116,7 +1179,7 @@ class BikeReportsMaintenanceWidgetState
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', bike['id']);
       _showSnack(
-          'Worker "${result['worker']}" assigned to Bike #${bike['bike_number']}.',
+          'Worker "${result['worker']}" assigned to ${bike['bike_number']}.',
           _orange);
       await _loadAll();
     } catch (e) {
@@ -1124,25 +1187,25 @@ class BikeReportsMaintenanceWidgetState
     }
   }
 
-  Future<void> _setForMaintenance(
-      Map<String, dynamic> bike) async {
+  Future<void> _setForMaintenance(Map<String, dynamic> bike) async {
     final ok = await _confirmDialog(
-      title: 'Set For Maintenance',
+      title: 'Set as Damaged',
       message:
-          'Bike #${bike['bike_number']} will be marked as "for maintenance".',
+          '${bike['bike_number']} will be marked as "damaged" and flagged for maintenance.',
       confirmLabel: 'Confirm',
       confirmColor: _red,
     );
     if (!ok) return;
     try {
+      // Use 'damaged' — valid DB status
       await supabase.from('bikes').update({
-        'status': 'for_maintenance',
+        'status': 'damaged',
         'maintenance_started_at':
             DateTime.now().toIso8601String(),
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', bike['id']);
       _showSnack(
-          'Bike #${bike['bike_number']} set for maintenance.', _red);
+          '${bike['bike_number']} marked as damaged.', _red);
       await _loadAll();
     } catch (e) {
       _showError(e);
@@ -1153,7 +1216,7 @@ class BikeReportsMaintenanceWidgetState
     final ok = await _confirmDialog(
       title: 'Mark as Done',
       message:
-          'Bike #${bike['bike_number']} will be set back to available.',
+          '${bike['bike_number']} will be set back to available.',
       confirmLabel: 'Mark Done',
       confirmColor: _green,
     );
@@ -1168,7 +1231,7 @@ class BikeReportsMaintenanceWidgetState
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', bike['id']);
       _showSnack(
-          'Bike #${bike['bike_number']} is now available.', _green);
+          '${bike['bike_number']} is now available.', _green);
       await _loadAll();
     } catch (e) {
       _showError(e);
@@ -1256,32 +1319,87 @@ class BikeReportsMaintenanceWidgetState
   // ─────────────────────────────────────────────
   Color _rStatusColor(String s) {
     switch (s) {
-      case 'submitted': return _red;
-      case 'under_review': return _blue;
-      case 'in_progress': return _orange;
-      case 'resolved': return _green;
-      default: return Colors.grey;
+      case 'submitted':
+        return _red;
+      case 'under_review':
+        return _blue;
+      case 'in_progress':
+        return _orange;
+      case 'resolved':
+        return _green;
+      default:
+        return Colors.grey;
     }
   }
 
   String _rStatusLabel(String s) {
     switch (s) {
-      case 'submitted': return 'New';
-      case 'under_review': return 'Under Review';
-      case 'in_progress': return 'In Progress';
-      case 'resolved': return 'Resolved';
-      case 'rejected': return 'Rejected';
-      default: return s.replaceAll('_', ' ');
+      case 'submitted':
+        return 'New';
+      case 'under_review':
+        return 'Under Review';
+      case 'in_progress':
+        return 'In Progress';
+      case 'resolved':
+        return 'Resolved';
+      case 'rejected':
+        return 'Rejected';
+      default:
+        return s.replaceAll('_', ' ');
     }
   }
 
   Color _priorityColor(String p) {
     switch (p) {
-      case 'urgent': return _red;
-      case 'high': return _orange;
-      case 'medium': return const Color(0xFFF9A825);
-      case 'low': return _green;
-      default: return Colors.grey;
+      case 'urgent':
+        return _red;
+      case 'high':
+        return _orange;
+      case 'medium':
+        return const Color(0xFFF9A825);
+      case 'low':
+        return _green;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  // Fixed to use actual DB status values
+  Color _bStatusColor(String s) {
+    switch (s) {
+      case 'available':
+        return _green;
+      case 'damaged':
+        return _red;
+      case 'maintenance':
+        return _orange;
+      case 'in_use':
+        return _blue;
+      case 'reserved':
+        return _purple;
+      case 'missing_bike':
+        return Colors.grey;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  String _bStatusLabel(String s) {
+    switch (s) {
+      case 'available':
+        return 'Available';
+      case 'damaged':
+        return 'Damaged';
+      case 'maintenance':
+        return 'Being Fixed';
+      case 'in_use':
+        return 'In Use';
+      case 'reserved':
+        return 'Reserved';
+      case 'missing_bike':
+        return 'Missing';
+      default:
+        return s.replaceAll('_', ' ');
     }
   }
 
@@ -1320,7 +1438,7 @@ class BikeReportsMaintenanceWidgetState
                     _buildTab(
                       icon: Icons.build_rounded,
                       label: 'Maintenance',
-                      badgeCount: forMaintenanceCount,
+                      badgeCount: damagedCount,
                       badgeColor: _orange,
                     ),
                   ],
@@ -1425,14 +1543,23 @@ class BikeReportsMaintenanceWidgetState
           children: [
             // Metric cards
             Row(children: [
-              _MetricCard(label: 'New Reports', count: submittedCount,
-                  icon: Icons.fiber_new_rounded, color: _red),
+              _MetricCard(
+                  label: 'New Reports',
+                  count: submittedCount,
+                  icon: Icons.fiber_new_rounded,
+                  color: _red),
               const SizedBox(width: 16),
-              _MetricCard(label: 'In Progress', count: inProgressCount,
-                  icon: Icons.pending_rounded, color: _orange),
+              _MetricCard(
+                  label: 'In Progress',
+                  count: inProgressCount,
+                  icon: Icons.pending_rounded,
+                  color: _orange),
               const SizedBox(width: 16),
-              _MetricCard(label: 'Resolved', count: resolvedCount,
-                  icon: Icons.check_circle_rounded, color: _green),
+              _MetricCard(
+                  label: 'Resolved',
+                  count: resolvedCount,
+                  icon: Icons.check_circle_rounded,
+                  color: _green),
             ]),
             const SizedBox(height: 24),
 
@@ -1523,7 +1650,8 @@ class BikeReportsMaintenanceWidgetState
                                   color: Colors.grey,
                                   size: 32)))),
                   Positioned(
-                    bottom: 8, right: 8,
+                    bottom: 8,
+                    right: 8,
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 4),
@@ -1555,7 +1683,8 @@ class BikeReportsMaintenanceWidgetState
               children: [
                 Row(children: [
                   Container(
-                    width: 52, height: 52,
+                    width: 52,
+                    height: 52,
                     decoration: BoxDecoration(
                         color: statusColor.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(14)),
@@ -1582,7 +1711,7 @@ class BikeReportsMaintenanceWidgetState
                         ]),
                         const SizedBox(height: 3),
                         Text(
-                            'Bike #${r['bike_number'] ?? 'N/A'}  •  $issueType',
+                            '${r['bike_number'] ?? 'N/A'}  •  $issueType',
                             style: TextStyle(
                                 fontSize: 13,
                                 color: Colors.grey[600])),
@@ -1727,7 +1856,8 @@ class BikeReportsMaintenanceWidgetState
                       child: const Icon(Icons.broken_image_rounded,
                           size: 64, color: Colors.grey)))),
           Positioned(
-            top: 8, right: 8,
+            top: 8,
+            right: 8,
             child: GestureDetector(
               onTap: () => Navigator.pop(ctx),
               child: Container(
@@ -1759,43 +1889,57 @@ class BikeReportsMaintenanceWidgetState
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(children: [
-              _MetricCard(label: 'All Bikes', count: allBikesCount,
+              _MetricCard(
+                  label: 'All Bikes',
+                  count: allBikesCount,
                   icon: Icons.pedal_bike_rounded,
-                  color: const Color(0xFF1565C0)),
+                  color: _blue),
               const SizedBox(width: 16),
-              _MetricCard(label: 'For Maintenance',
-                  count: forMaintenanceCount,
-                  icon: Icons.warning_amber_rounded, color: _red),
+              _MetricCard(
+                  label: 'Damaged',
+                  count: damagedCount,
+                  icon: Icons.warning_amber_rounded,
+                  color: _red),
               const SizedBox(width: 16),
-              _MetricCard(label: 'Being Fixed',
+              _MetricCard(
+                  label: 'Being Fixed',
                   count: maintenanceCount,
-                  icon: Icons.engineering_rounded, color: _orange),
+                  icon: Icons.engineering_rounded,
+                  color: _orange),
               const SizedBox(width: 16),
-              _MetricCard(label: 'Available',
+              _MetricCard(
+                  label: 'Available',
                   count: availableCount,
-                  icon: Icons.check_circle_rounded, color: _green),
+                  icon: Icons.check_circle_rounded,
+                  color: _green),
             ]),
             const SizedBox(height: 24),
 
+            // Filter chips — all use valid DB status values
             Wrap(
               spacing: 10,
               runSpacing: 10,
               children: [
                 _filterChip('all', 'All Bikes',
                     Icons.pedal_bike_rounded, _blue, false),
-                _filterChip('for_maintenance', 'For Maintenance',
+                _filterChip('damaged', 'Damaged',
                     Icons.warning_amber_rounded, _red, false),
                 _filterChip('maintenance', 'Being Fixed',
                     Icons.engineering_rounded, _orange, false),
                 _filterChip('available', 'Available',
                     Icons.check_circle_rounded, _green, false),
+                _filterChip('in_use', 'In Use',
+                    Icons.directions_bike_rounded, _blue, false),
+                _filterChip('reserved', 'Reserved',
+                    Icons.bookmark_rounded, _purple, false),
+                _filterChip('missing_bike', 'Missing',
+                    Icons.search_off_rounded, Colors.grey, false),
               ],
             ),
             const SizedBox(height: 20),
 
             if (maintenanceBikes.isEmpty)
-              _emptyState(
-                  'No bikes found', Icons.pedal_bike_outlined)
+              _emptyState('No bikes found', Icons.pedal_bike_outlined)
             else
               ...maintenanceBikes.map(_bikeCard),
           ],
@@ -1805,27 +1949,18 @@ class BikeReportsMaintenanceWidgetState
   }
 
   Widget _bikeCard(Map<String, dynamic> b) {
-    final status = b['status'] ?? 'for_maintenance';
-    final isForMaint = status == 'for_maintenance';
+    final status = b['status'] ?? 'available';
+    // All statuses from actual DB constraint:
+    // available, reserved, damaged, missing_bike, maintenance, in_use
+    final isDamaged = status == 'damaged';
     final isBeingFixed = status == 'maintenance';
     final isAvailable = status == 'available';
     final isInUse = status == 'in_use';
+    final isReserved = status == 'reserved';
+    final isMissing = status == 'missing_bike';
 
-    final color = isForMaint 
-    ? _red 
-    : isBeingFixed 
-        ? _orange 
-        : isInUse
-            ? const Color(0xFF1565C0)  // Blue color for in_use
-            : _green;
-            
-final statusLabel = isForMaint
-    ? 'For Maintenance'
-    : isBeingFixed
-        ? 'Being Fixed'
-        : isInUse
-            ? 'In Use'
-            : 'Available';
+    final color = _bStatusColor(status);
+    final statusLabel = _bStatusLabel(status);
 
     String lastMaint = 'Never';
     try {
@@ -1860,15 +1995,19 @@ final statusLabel = isForMaint
         children: [
           Row(children: [
             Container(
-              width: 52, height: 52,
+              width: 52,
+              height: 52,
               decoration: BoxDecoration(
                   color: color.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(14)),
               child: Icon(
                   isBeingFixed
                       ? Icons.engineering_rounded
-                      : Icons.pedal_bike_rounded,
-                  color: color, size: 26),
+                      : isMissing
+                          ? Icons.search_off_rounded
+                          : Icons.pedal_bike_rounded,
+                  color: color,
+                  size: 26),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -1876,7 +2015,7 @@ final statusLabel = isForMaint
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    Text('Bike #${b['bike_number']}',
+                    Text('${b['bike_number']}',
                         style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.bold)),
@@ -1897,7 +2036,7 @@ final statusLabel = isForMaint
             ),
           ]),
 
-          if (isBeingFixed || isForMaint) ...[
+          if (isBeingFixed || isDamaged) ...[
             const SizedBox(height: 12),
             Container(
               width: double.infinity,
@@ -1964,7 +2103,8 @@ final statusLabel = isForMaint
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (isForMaint)
+              // Damaged bike — assign a worker (moves to 'maintenance')
+              if (isDamaged)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                       backgroundColor: _orange,
@@ -1975,9 +2115,10 @@ final statusLabel = isForMaint
                   icon: const Icon(Icons.engineering_rounded,
                       size: 18),
                   label: const Text('Assign Worker',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w600)),
+                      style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
+
+              // Available bike — flag as damaged
               if (isAvailable)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
@@ -1987,10 +2128,11 @@ final statusLabel = isForMaint
                           borderRadius: BorderRadius.circular(8))),
                   onPressed: () => _setForMaintenance(b),
                   icon: const Icon(Icons.build_rounded, size: 18),
-                  label: const Text('Set For Maintenance',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w600)),
+                  label: const Text('Mark as Damaged',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
+
+              // Being fixed — edit worker or mark done
               if (isBeingFixed) ...[
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
@@ -2016,10 +2158,32 @@ final statusLabel = isForMaint
                   icon: const Icon(Icons.check_circle_rounded,
                       size: 18),
                   label: const Text('Mark Done',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w600)),
+                      style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
               ],
+
+              // In use / reserved / missing — read-only display, no action
+              if (isInUse || isReserved || isMissing)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: color.withOpacity(0.3)),
+                  ),
+                  child: Text(
+                    isInUse
+                        ? 'Currently in use'
+                        : isReserved
+                            ? 'Reserved by user'
+                            : 'Reported missing',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: color),
+                  ),
+                ),
             ],
           ),
         ],
@@ -2300,8 +2464,7 @@ class _ExportDialogState extends State<_ExportDialog> {
           // Header
           Container(
             decoration: const BoxDecoration(
-              gradient:
-                  LinearGradient(colors: [_darkRed, _red]),
+              gradient: LinearGradient(colors: [_darkRed, _red]),
               borderRadius: BorderRadius.vertical(
                   top: Radius.circular(20)),
             ),
@@ -2313,8 +2476,7 @@ class _ExportDialogState extends State<_ExportDialog> {
                 decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(10)),
-                child: const Icon(
-                    Icons.picture_as_pdf_rounded,
+                child: const Icon(Icons.picture_as_pdf_rounded,
                     color: Colors.white, size: 22),
               ),
               const SizedBox(width: 14),
@@ -2367,7 +2529,7 @@ class _ExportDialogState extends State<_ExportDialog> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Exports a combined PDF with a summary, all bike reports, and maintenance records for the selected period.',
+                        'Exports a combined PDF with a summary, all bike reports, and fleet status records for the selected period.',
                         style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey[700]),
@@ -2467,18 +2629,18 @@ class _ExportDialogState extends State<_ExportDialog> {
                         borderRadius: BorderRadius.circular(10)),
                     elevation: 0,
                   ),
-                  onPressed:
-                      _exporting ? null : _handleExport,
+                  onPressed: _exporting ? null : _handleExport,
                   icon: _exporting
                       ? const SizedBox(
-                          width: 16, height: 16,
+                          width: 16,
+                          height: 16,
                           child: CircularProgressIndicator(
                               strokeWidth: 2,
                               valueColor:
                                   AlwaysStoppedAnimation<Color>(
                                       Colors.white)))
-                      : const Icon(
-                          Icons.save_alt_rounded, size: 18),
+                      : const Icon(Icons.save_alt_rounded,
+                          size: 18),
                   label: Text(
                     _exporting ? 'Saving PDF...' : 'Save PDF',
                     style: const TextStyle(
@@ -2494,8 +2656,7 @@ class _ExportDialogState extends State<_ExportDialog> {
     );
   }
 
-  Widget _presetBtn(String label, String key) =>
-      OutlinedButton(
+  Widget _presetBtn(String label, String key) => OutlinedButton(
         onPressed: _exporting ? null : () => _preset(key),
         style: OutlinedButton.styleFrom(
           foregroundColor: _red,
@@ -2511,7 +2672,7 @@ class _ExportDialogState extends State<_ExportDialog> {
       );
 
   Widget _dateField(
-      String label, String value, VoidCallback? onTap) =>
+          String label, String value, VoidCallback? onTap) =>
       GestureDetector(
         onTap: onTap,
         child: Container(
