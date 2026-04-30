@@ -23,9 +23,9 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   List<LatLng> _historyPoints = [];
   Timer? _refreshTimer;
 
-  static const LatLng _defaultPosition = LatLng(14.173183, 121.084274);
+
   static const int BIKE_ID = 12; // BIKE 1
-  
+
   // ── GOOGLE MAPS API KEY ──────────────────────────────────────────────────
   static const String GOOGLE_MAPS_API_KEY = 'YOUR_API_KEY_HERE';
   // ────────────────────────────────────────────────────────────────────────
@@ -67,9 +67,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
             latitude, 
             longitude, 
             status, 
-            last_location_update,
-            total_distance_km,
-            total_rides
+            last_location_update
           ''')
           .order('bike_number');
 
@@ -141,7 +139,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
           .from('borrowing_applications_version2')
           .select('first_name, last_name, middle_name, contact_number, status')
           .eq('assigned_bike_number', bikeNumber)
-          .inFilter('status', ['approved', 'active', 'borrowed']) // adjust as needed
+          .inFilter('status', ['approved', 'active', 'borrowed'])
           .order('created_at', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -162,7 +160,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // REVERSE GEOCODING
+  // REVERSE GEOCODING — returns a readable address (street/area level)
   // ══════════════════════════════════════════════════════════════════════════
   Future<String> _reverseGeocode(double lat, double lng) async {
     try {
@@ -173,35 +171,21 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
       );
 
       final response = await http.get(url);
-      if (response.statusCode != 200) {
-        return 'Unknown';
-      }
+      if (response.statusCode != 200) return 'Unknown location';
 
       final data = json.decode(response.body);
-      if (data['status'] != 'OK' || data['results'] == null || (data['results'] as List).isEmpty) {
-        return 'Unknown';
+      if (data['status'] != 'OK' ||
+          data['results'] == null ||
+          (data['results'] as List).isEmpty) {
+        return 'Unknown location';
       }
 
-      // Extract barangay from address_components
+      // Return the first result's formatted address — human-readable full address
       final results = data['results'] as List;
-      for (var result in results) {
-        final components = result['address_components'] as List;
-        for (var component in components) {
-          final types = component['types'] as List;
-          // Barangay is typically labeled as "sublocality" or "sublocality_level_1"
-          if (types.contains('sublocality') || 
-              types.contains('sublocality_level_1') ||
-              types.contains('neighborhood')) {
-            return component['long_name'] as String;
-          }
-        }
-      }
-
-      // Fallback: return first result's formatted address if no barangay found
-      return results[0]['formatted_address'] as String? ?? 'Unknown';
+      return results[0]['formatted_address'] as String? ?? 'Unknown location';
     } catch (e) {
       debugPrint('Error reverse geocoding: $e');
-      return 'Unknown';
+      return 'Unknown location';
     }
   }
 
@@ -215,13 +199,10 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
         markerId: MarkerId('bike_${bike.id}'),
         position: LatLng(bike.latitude, bike.longitude),
         icon: bitmapDescriptor,
-        // ── CUSTOM onTap ─────────────────────────────────────────────────────
         onTap: () => _showBikeDetailsDialog(bike),
-        // ─────────────────────────────────────────────────────────────────────
         infoWindow: InfoWindow(
           title: '🚲 ${bike.bikeNumber}',
-          snippet:
-              '${bike.status.toUpperCase()} • ${bike.totalDistanceKm} km • ${bike.totalRides} rides',
+          snippet: bike.status.toUpperCase(),
         ),
       ));
     }
@@ -232,7 +213,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CUSTOM DIALOG
+  // CUSTOM DIALOG — shows borrower info + location only
   // ══════════════════════════════════════════════════════════════════════════
   Future<void> _showBikeDetailsDialog(BikeLocation bike) async {
     // Show loading dialog first
@@ -242,16 +223,19 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
       builder: (ctx) => const Center(child: CircularProgressIndicator()),
     );
 
-    // Fetch data
-    final borrowerInfo = await _loadBorrowerInfo(bike.bikeNumber);
-    final barangay = await _reverseGeocode(bike.latitude, bike.longitude);
+    // Fetch borrower and location in parallel
+    final results = await Future.wait([
+      _loadBorrowerInfo(bike.bikeNumber),
+      _reverseGeocode(bike.latitude, bike.longitude),
+    ]);
+
+    final borrowerInfo = results[0] as BorrowerInfo?;
+    final address = results[1] as String;
 
     // Close loading dialog
     if (mounted) Navigator.of(context).pop();
-
-    // Show actual dialog
     if (!mounted) return;
-    
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -286,21 +270,9 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
               ),
               const SizedBox(height: 16),
 
-              // ── Location Info ─────────────────────────────────────────────
-              _dialogInfoRow(Icons.location_on, 'Barangay', barangay),
-              const SizedBox(height: 8),
-              _dialogInfoRow(
-                Icons.gps_fixed,
-                'Coordinates',
-                '${bike.latitude.toStringAsFixed(6)}, ${bike.longitude.toStringAsFixed(6)}',
-              ),
-              const Divider(height: 24),
+              // ── Current Location ──────────────────────────────────────────
+              _dialogInfoRow(Icons.location_on, 'Current Location', address),
 
-              // ── Bike Stats ────────────────────────────────────────────────
-              _dialogInfoRow(Icons.route, 'Total Distance', '${bike.totalDistanceKm} km'),
-              const SizedBox(height: 8),
-              _dialogInfoRow(Icons.directions_bike, 'Total Rides', '${bike.totalRides}'),
-              
               if (bike.lastLocationUpdate != null) ...[
                 const SizedBox(height: 8),
                 _dialogInfoRow(
@@ -331,6 +303,18 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
                 _dialogInfoRow(Icons.phone, 'Contact', borrowerInfo.contactNumber),
                 const SizedBox(height: 8),
                 _dialogInfoRow(Icons.info_outline, 'Status', borrowerInfo.status),
+              ] else ...[
+                const Divider(height: 24),
+                const Row(
+                  children: [
+                    Icon(Icons.person_off, size: 18, color: Colors.grey),
+                    SizedBox(width: 8),
+                    Text(
+                      'No active borrower',
+                      style: TextStyle(fontSize: 13, color: Colors.grey),
+                    ),
+                  ],
+                ),
               ],
             ],
           ),
@@ -394,7 +378,6 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
     return '${dt.month}/${dt.day}/${dt.year} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
-  /// Draws a classic pin / teardrop marker colored by bike status.
   Future<BitmapDescriptor> _createPinMarker(String status) async {
     const double w = 48.0;
     const double h = 64.0;
@@ -402,13 +385,13 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
     final Color fillColor;
     switch (status.toLowerCase()) {
       case 'available':
-        fillColor = const Color(0xFF2ECC71); // green
+        fillColor = const Color(0xFF2ECC71);
         break;
       case 'in_use':
-        fillColor = const Color(0xFFF39C12); // orange
+        fillColor = const Color(0xFFF39C12);
         break;
       default:
-        fillColor = const Color(0xFFE74C3C); // red
+        fillColor = const Color(0xFFE74C3C);
     }
 
     final recorder = ui.PictureRecorder();
@@ -512,24 +495,6 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 ),
                 const Spacer(),
-                if (_historyPoints.isNotEmpty)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[100],
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${_historyPoints.length} pts',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue[800],
-                      ),
-                    ),
-                  ),
-                const SizedBox(width: 6),
                 IconButton(
                   icon: const Icon(Icons.refresh, size: 18),
                   onPressed: _loadData,
@@ -551,73 +516,31 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.location_off,
-                                size: 48, color: Colors.grey),
+                            Icon(Icons.location_off, size: 48, color: Colors.grey),
                             SizedBox(height: 12),
                             Text(
                               'No bike locations available',
-                              style:
-                                  TextStyle(fontSize: 13, color: Colors.grey),
+                              style: TextStyle(fontSize: 13, color: Colors.grey),
                             ),
                           ],
                         ),
                       )
                     : GoogleMap(
                         initialCameraPosition: CameraPosition(
-                          target: _bikes.isNotEmpty
-                              ? LatLng(_bikes[0].latitude, _bikes[0].longitude)
-                              : _defaultPosition,
+                          target: LatLng(_bikes[0].latitude, _bikes[0].longitude),
                           zoom: 17.0,
                         ),
                         markers: _markers,
                         polylines: _polylines,
-                        onMapCreated: (controller) =>
-                            _mapController = controller,
+                        onMapCreated: (controller) => _mapController = controller,
                         myLocationEnabled: false,
                         myLocationButtonEnabled: true,
                         zoomControlsEnabled: true,
                         mapToolbarEnabled: true,
                       ),
           ),
-
-          // ── Info bar ────────────────────────────────────────────────
-          if (_bikes.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(12),
-                  bottomRight: Radius.circular(12),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _infoChip(Icons.route, '${_bikes[0].totalDistanceKm} km',
-                      'Distance'),
-                  _infoChip(Icons.history, '${_historyPoints.length} pts',
-                      'Trail'),
-                  _infoChip(
-                      Icons.directions_bike, '${_bikes[0].totalRides}', 'Rides'),
-                ],
-              ),
-            ),
         ],
       ),
-    );
-  }
-
-  Widget _infoChip(IconData icon, String value, String label) {
-    return Column(
-      children: [
-        Icon(icon, size: 16, color: Colors.blue),
-        const SizedBox(height: 2),
-        Text(value,
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-        Text(label,
-            style: const TextStyle(fontSize: 10, color: Colors.grey)),
-      ],
     );
   }
 }
@@ -631,8 +554,6 @@ class BikeLocation {
   final double latitude;
   final double longitude;
   final String status;
-  final double totalDistanceKm;
-  final int totalRides;
   final DateTime? lastLocationUpdate;
 
   BikeLocation({
@@ -641,8 +562,6 @@ class BikeLocation {
     required this.latitude,
     required this.longitude,
     required this.status,
-    required this.totalDistanceKm,
-    required this.totalRides,
     this.lastLocationUpdate,
   });
 
@@ -653,8 +572,6 @@ class BikeLocation {
       latitude: (json['latitude'] as num).toDouble(),
       longitude: (json['longitude'] as num).toDouble(),
       status: json['status'] as String,
-      totalDistanceKm: (json['total_distance_km'] as num?)?.toDouble() ?? 0.0,
-      totalRides: json['total_rides'] as int? ?? 0,
       lastLocationUpdate: json['last_location_update'] != null
           ? DateTime.parse(json['last_location_update'] as String)
           : null,
