@@ -38,8 +38,8 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
   int newApprovedCount = 0;
   int newRejectedCount = 0;
 
-  // ── Discipline tab
-  String selectedDisciplineTab = 'open';
+  // ── Discipline tab - UPDATED to use liabilities_version2
+  String selectedDisciplineTab = 'forwarded_hrmo';
   List<Map<String, dynamic>> disciplineCases = [];
   int openCasesCount = 0;
   int resolvedCasesCount = 0;
@@ -83,12 +83,6 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
         );
       }
     }
-  }
-
-  // Used for discipline — sr_code null = personnel
-  bool _isPersonnel(Map<String, dynamic> record) {
-    final srCode = record['sr_code'];
-    return srCode == null || srCode.toString().trim().isEmpty;
   }
 
   Future<void> _loadAll() async {
@@ -153,18 +147,22 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
         .eq('user_type', 'personnel')
         .ilike('campus', userCampus!);
 
-    // ── Discipline metrics
+    // ── Discipline metrics — UPDATED to use liabilities_version2
     final openRaw = await supabase
-        .from('student_discipline')
-        .select('id, sr_code')
-        .eq('status', 'open')
-        .ilike('campus', userCampus!);
+        .from('liabilities_version2')
+        .select('id')
+        .eq('penalty_status', 'forwarded_hrmo')
+        .eq('user_type', 'personnel')
+        .ilike('campus', userCampus!)
+        .count(CountOption.exact);
 
     final resolvedRaw = await supabase
-        .from('student_discipline')
-        .select('id, sr_code')
-        .eq('status', 'resolved')
-        .ilike('campus', userCampus!);
+        .from('liabilities_version2')
+        .select('id')
+        .inFilter('final_penalty_status', ['suspended_1_semester', 'terminated'])
+        .eq('user_type', 'personnel')
+        .ilike('campus', userCampus!)
+        .count(CountOption.exact);
 
     setState(() {
       pendingCount  = (pending as List).length;
@@ -175,8 +173,8 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
       newApprovedCount = (newApproved as List).length;
       newRejectedCount = (newRejected as List).length;
 
-      openCasesCount     = (openRaw as List).where((c) => _isPersonnel(c)).length;
-      resolvedCasesCount = (resolvedRaw as List).where((c) => _isPersonnel(c)).length;
+      openCasesCount     = openRaw.count;
+      resolvedCasesCount = resolvedRaw.count;
     });
   }
 
@@ -206,19 +204,32 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
     setState(() => newApplications = List<Map<String, dynamic>>.from(response));
   }
 
-  // ── Discipline cases
+  // ── Discipline cases — UPDATED to use liabilities_version2
   Future<void> _fetchDisciplineCases() async {
     if (userCampus == null) return;
     try {
-      final response = await supabase
-          .from('student_discipline')
-          .select('*')
-          .eq('status', selectedDisciplineTab)
-          .ilike('campus', userCampus!)
-          .order('forwarded_at', ascending: false);
-      final list     = List<Map<String, dynamic>>.from(response);
-      final filtered = list.where((c) => _isPersonnel(c)).toList();
-      setState(() => disciplineCases = filtered);
+      final isOpen = selectedDisciplineTab == 'forwarded_hrmo';
+      late final List response;
+
+      if (isOpen) {
+        response = await supabase
+            .from('liabilities_version2')
+            .select('*')
+            .eq('penalty_status', 'forwarded_hrmo')
+            .eq('user_type', 'personnel')
+            .ilike('campus', userCampus!)
+            .order('forwarded_at', ascending: false);
+      } else {
+        response = await supabase
+            .from('liabilities_version2')
+            .select('*')
+            .inFilter('final_penalty_status', ['suspended_1_semester', 'terminated'])
+            .eq('user_type', 'personnel')
+            .ilike('campus', userCampus!)
+            .order('final_penalty_set_at', ascending: false);
+      }
+
+      setState(() => disciplineCases = List<Map<String, dynamic>>.from(response));
     } catch (e) {
       debugPrint('Fetch discipline cases error: $e');
     }
@@ -791,7 +802,7 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
 
   Widget _buildDisciplineFilterTabs() {
     return Row(children: [
-      _disciplineFilterTab(value: 'open', label: 'Open Cases', icon: Icons.pending_actions_rounded, color: const Color(0xFFD32F2F), count: openCasesCount),
+      _disciplineFilterTab(value: 'forwarded_hrmo', label: 'Open Cases', icon: Icons.pending_actions_rounded, color: const Color(0xFFD32F2F), count: openCasesCount),
       const SizedBox(width: 12),
       _disciplineFilterTab(value: 'resolved', label: 'Resolved', icon: Icons.check_circle_rounded, color: const Color(0xFF388E3C), count: resolvedCasesCount),
     ]);
@@ -838,7 +849,7 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
           child: Column(children: [
             Icon(Icons.inbox_outlined, size: 72, color: Colors.grey[300]),
             const SizedBox(height: 16),
-            Text(selectedDisciplineTab == 'open' ? 'No open discipline cases' : 'No resolved cases yet',
+            Text(selectedDisciplineTab == 'forwarded_hrmo' ? 'No open discipline cases' : 'No resolved cases yet',
                 style: TextStyle(fontSize: 16, color: Colors.grey[500], fontWeight: FontWeight.w500)),
           ]),
         ),
@@ -848,11 +859,10 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
   }
 
   Widget _disciplineCaseCard(Map<String, dynamic> disciplineCase) {
-    final isOpen      = disciplineCase['status'] == 'open';
-    final isRenewal   = disciplineCase['renewal_application_id'] != null;
+    final isOpen      = disciplineCase['penalty_status'] == 'forwarded_hrmo';
     final penaltyRec  = _formatPenalty(disciplineCase['penalty_recommendation'] as String? ?? '');
-    final finalPenalty = _formatPenalty(disciplineCase['final_penalty'] as String? ?? '');
-    final employeeNo  = disciplineCase['employee_no']?.toString();
+    final finalPenalty = _formatPenalty(disciplineCase['final_penalty_status'] as String? ?? '');
+    final employeeNo  = disciplineCase['employee_no']?.toString() ?? 'N/A';
 
     String forwardedAtLabel = 'N/A';
     try {
@@ -861,9 +871,9 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
     } catch (_) {}
 
     String resolvedAtLabel = '';
-    if (!isOpen && disciplineCase['decided_at'] != null) {
+    if (!isOpen && disciplineCase['final_penalty_set_at'] != null) {
       try {
-        final dt = DateTime.parse(disciplineCase['decided_at'].toString()).toLocal();
+        final dt = DateTime.parse(disciplineCase['final_penalty_set_at'].toString()).toLocal();
         resolvedAtLabel = DateFormat('MMM dd, yyyy HH:mm').format(dt);
       } catch (_) {}
     }
@@ -894,13 +904,10 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
                 const SizedBox(width: 8),
                 _chip(isOpen ? 'Open Case' : 'Resolved', statusColor),
                 const SizedBox(width: 6),
-                _chip(isRenewal ? 'Renewal' : 'New', isRenewal ? const Color(0xFF7B1FA2) : const Color(0xFF1565C0)),
-                const SizedBox(width: 6),
                 _chip('Personnel', const Color(0xFF7B1FA2)),
               ]),
               const SizedBox(height: 4),
-              if (employeeNo != null && employeeNo.isNotEmpty)
-                Text('Employee No: $employeeNo', style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+              Text('Employee No: $employeeNo', style: TextStyle(fontSize: 13, color: Colors.grey[600])),
             ]),
           ),
           if (isOpen)
@@ -920,7 +927,6 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
         Row(children: [
           Expanded(child: _detailItem(Icons.pedal_bike_rounded, 'Bike', disciplineCase['bike_number'] ?? 'N/A')),
           Expanded(child: _detailItem(Icons.access_time_rounded, 'Forwarded', forwardedAtLabel)),
-          Expanded(child: _detailItem(Icons.warning_amber_rounded, 'Days Overdue', '${disciplineCase['days_overdue'] ?? 0}')),
         ]),
         const SizedBox(height: 12),
         Container(
@@ -959,12 +965,21 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
             ]),
           ),
         ],
-        if (disciplineCase['notes'] != null && disciplineCase['notes'].toString().isNotEmpty) ...[
+        if (disciplineCase['forwarded_notes'] != null && disciplineCase['forwarded_notes'].toString().isNotEmpty) ...[
           const SizedBox(height: 8),
           Row(children: [
             Icon(Icons.notes_rounded, size: 14, color: Colors.grey[500]),
             const SizedBox(width: 6),
-            Expanded(child: Text('Notes: ${disciplineCase['notes']}',
+            Expanded(child: Text('Notes: ${disciplineCase['forwarded_notes']}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500], fontStyle: FontStyle.italic))),
+          ]),
+        ],
+        if (disciplineCase['assessment_remarks'] != null && disciplineCase['assessment_remarks'].toString().isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Row(children: [
+            Icon(Icons.rate_review_rounded, size: 14, color: Colors.grey[500]),
+            const SizedBox(width: 6),
+            Expanded(child: Text('Assessment: ${disciplineCase['assessment_remarks']}',
                 style: TextStyle(fontSize: 12, color: Colors.grey[500], fontStyle: FontStyle.italic))),
           ]),
         ],
@@ -998,8 +1013,8 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
 
   String _formatPenalty(String penalty) {
     switch (penalty) {
-      case 'permanently_terminated': return 'Permanently Terminated';
-      case 'suspended_1_semester':   return 'Suspended for 1 Semester';
+      case 'terminated': return 'Permanently Terminated';
+      case 'suspended_1_semester': return 'Suspended for 1 Semester';
       default: return '';
     }
   }
@@ -1251,7 +1266,7 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
 enum _AppTableSource { renewal, newApplication }
 
 // ═══════════════════════════════════════════════════════════════════
-// FINALIZE DECISION DIALOG  (unchanged)
+// FINALIZE DECISION DIALOG - UPDATED to use liabilities_version2 fields
 // ═══════════════════════════════════════════════════════════════════
 class _FinalizeDecisionDialog extends StatefulWidget {
   final Map<String, dynamic> disciplineCase;
@@ -1272,7 +1287,11 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
   void initState() {
     super.initState();
     final rec = widget.disciplineCase['penalty_recommendation'] as String?;
-    if (rec != null && rec.isNotEmpty) _finalPenalty = rec;
+    if (rec == 'terminated') {
+      _finalPenalty = 'terminated';
+    } else if (rec == 'suspended_1_semester') {
+      _finalPenalty = 'suspended_1_semester';
+    }
   }
 
   @override
@@ -1280,8 +1299,8 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
 
   String _formatPenalty(String penalty) {
     switch (penalty) {
-      case 'permanently_terminated': return 'Permanently Terminated';
-      case 'suspended_1_semester':   return 'Suspended for 1 Semester';
+      case 'terminated': return 'Permanently Terminated';
+      case 'suspended_1_semester': return 'Suspended for 1 Semester';
       default: return penalty;
     }
   }
@@ -1290,34 +1309,28 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
     if (!_canFinalize) return;
     setState(() => _isSubmitting = true);
     try {
-      final now    = DateTime.now().toIso8601String();
+      final now = DateTime.now().toIso8601String();
       final userId = supabase.auth.currentUser?.id;
-      final caseId = widget.disciplineCase['id'];
-      final appId  = widget.disciplineCase['application_id'];
-      final renewalAppId = widget.disciplineCase['renewal_application_id'];
 
-      await supabase.from('student_discipline').update({
-        'status': 'resolved', 'final_penalty': _finalPenalty,
-        'final_decision_notes': _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
-        'decided_by': userId, 'decided_at': now, 'notification_sent': true,
-      }).eq('id', caseId);
+      // UPDATED: Use liabilities_version2 fields
+      await supabase.from('liabilities_version2').update({
+        'penalty_status': _finalPenalty,
+        'final_penalty_status': _finalPenalty,
+        'final_penalty_set_by': userId,
+        'final_penalty_set_at': now,
+        'final_penalty_remarks': _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+      }).eq('id', widget.disciplineCase['id']);
 
-      await supabase.from('liabilities').update({'status': 'resolved', 'resolved_at': now})
-          .eq('id', widget.disciplineCase['liability_id']);
+      // Update related application
+      final applicationId = widget.disciplineCase['application_id'];
+      if (applicationId != null) {
+        await supabase.from('borrowing_applications_version2').update({
+          'penalty_status': _finalPenalty,
+        }).eq('id', applicationId);
 
-      if (renewalAppId != null) {
-        await supabase.from('renewal_applications').update({'status': _finalPenalty, 'final_penalty': _finalPenalty}).eq('id', renewalAppId);
-      } else if (appId != null) {
-        await supabase.from('borrowing_applications').update({'status': _finalPenalty, 'final_penalty': _finalPenalty}).eq('id', appId);
-      }
-
-      if (renewalAppId != null) {
-        final renewal = await supabase.from('renewal_applications').select('session_id').eq('id', renewalAppId).maybeSingle();
-        if (renewal != null && renewal['session_id'] != null) {
-          await supabase.from('borrowing_sessions').update({'status': _finalPenalty}).eq('id', renewal['session_id']);
-        }
-      } else if (appId != null) {
-        await supabase.from('borrowing_sessions').update({'status': _finalPenalty}).eq('application_id', appId);
+        await supabase.from('borrowing_sessions').update({
+          'status': _finalPenalty,
+        }).eq('application_id', applicationId);
       }
 
       if (mounted) {
@@ -1338,12 +1351,12 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final gsoRec      = widget.disciplineCase['penalty_recommendation'] as String? ?? '';
+    final gsoRec = widget.disciplineCase['penalty_recommendation'] as String? ?? '';
     final borrowerName = widget.disciplineCase['borrower_name'] ?? 'Unknown';
-    final employeeNo  = widget.disciplineCase['employee_no']?.toString();
-    final bikeNumber  = widget.disciplineCase['bike_number'] ?? 'N/A';
-    final daysOverdue = widget.disciplineCase['days_overdue'] ?? 0;
-    final notes       = widget.disciplineCase['notes'];
+    final employeeNo = widget.disciplineCase['employee_no']?.toString() ?? 'N/A';
+    final bikeNumber = widget.disciplineCase['bike_number'] ?? 'N/A';
+    final notes = widget.disciplineCase['forwarded_notes'];
+    final assessmentRemarks = widget.disciplineCase['assessment_remarks'];
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -1390,10 +1403,10 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                     ]),
                     const SizedBox(height: 12),
                     _caseRow('Personnel', borrowerName),
-                    if (employeeNo != null && employeeNo.isNotEmpty) _caseRow('Employee No', employeeNo),
+                    _caseRow('Employee No', employeeNo),
                     _caseRow('Bike Number', bikeNumber),
-                    _caseRow('Days Overdue', daysOverdue.toString()),
-                    if (notes != null && notes.toString().isNotEmpty) _caseRow('GSO Notes', notes),
+                    if (notes != null && notes.toString().isNotEmpty) _caseRow('Forwarded Notes', notes.toString()),
+                    if (assessmentRemarks != null && assessmentRemarks.toString().isNotEmpty) _caseRow('Assessment', assessmentRemarks.toString()),
                   ]),
                 ),
                 const SizedBox(height: 20),
@@ -1423,7 +1436,7 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                 Text('This decision is final and will be applied to the personnel.',
                     style: TextStyle(fontSize: 13, color: Colors.grey[500])),
                 const SizedBox(height: 12),
-                _penaltyOption(value: 'permanently_terminated', label: 'Permanently Terminated',
+                _penaltyOption(value: 'terminated', label: 'Permanently Terminated',
                     description: 'Personnel is permanently banned from the PedalHub bike borrowing program.',
                     icon: Icons.block_rounded, color: const Color(0xFFD32F2F)),
                 const SizedBox(height: 10),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 class BikeTrackingMap extends StatefulWidget {
@@ -93,40 +94,46 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   }
 
   Future<void> _loadLocationHistory() async {
-  try {
-    final response = await supabase
-        .from('bike_locations')
-        .select('latitude, longitude, created_at')
-        .eq('bike_id', BIKE_ID)
-        .order('created_at')
-        .limit(100);
+    try {
+      // ── TODAY-ONLY FILTER ──────────────────────────────────────────────────
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day).toIso8601String();
+      // ──────────────────────────────────────────────────────────────────────
 
-    if (mounted) {
-      final newPoints = (response as List)
-          .map((p) => LatLng(
-                (p['latitude'] as num).toDouble(),
-                (p['longitude'] as num).toDouble(),
-              ))
-          .toList();
+      final response = await supabase
+          .from('bike_locations')
+          .select('latitude, longitude, created_at')
+          .eq('bike_id', BIKE_ID)
+          .gte('created_at', todayStart) // <── only today's records
+          .order('created_at')
+          .limit(100);
 
-      // Only update if may bagong points
-      if (newPoints.length != _historyPoints.length) {
-        setState(() {
-          _historyPoints = newPoints;
-          _updatePolyline();
-        });
+      if (mounted) {
+        final newPoints = (response as List)
+            .map((p) => LatLng(
+                  (p['latitude'] as num).toDouble(),
+                  (p['longitude'] as num).toDouble(),
+                ))
+            .toList();
+
+        // Only update if there are new points
+        if (newPoints.length != _historyPoints.length) {
+          setState(() {
+            _historyPoints = newPoints;
+            _updatePolyline();
+          });
+        }
       }
+    } catch (e) {
+      debugPrint('Error loading history: $e');
     }
-  } catch (e) {
-    debugPrint('Error loading history: $e');
   }
-}
 
   Future<void> _updateMarkers() async {
     Set<Marker> newMarkers = {};
 
     for (var bike in _bikes) {
-      final bitmapDescriptor = await _createBikeMarker(bike.status);
+      final bitmapDescriptor = await _createPinMarker(bike.status);
 
       newMarkers.add(Marker(
         markerId: MarkerId('bike_${bike.id}'),
@@ -134,7 +141,8 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
         icon: bitmapDescriptor,
         infoWindow: InfoWindow(
           title: '🚲 ${bike.bikeNumber}',
-          snippet: '${bike.status.toUpperCase()} • ${bike.totalDistanceKm} km • ${bike.totalRides} rides',
+          snippet:
+              '${bike.status.toUpperCase()} • ${bike.totalDistanceKm} km • ${bike.totalRides} rides',
         ),
       ));
     }
@@ -144,57 +152,89 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
     }
   }
 
-  Future<BitmapDescriptor> _createBikeMarker(String status) async {
+  /// Draws a classic pin / teardrop marker colored by bike status.
+  Future<BitmapDescriptor> _createPinMarker(String status) async {
+    const double w = 48.0;
+    const double h = 64.0;
+
+    final Color fillColor;
+    switch (status.toLowerCase()) {
+      case 'available':
+        fillColor = const Color(0xFF2ECC71); // green
+        break;
+      case 'in_use':
+        fillColor = const Color(0xFFF39C12); // orange
+        break;
+      default:
+        fillColor = const Color(0xFFE74C3C); // red
+    }
+
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    const size = Size(80, 80);
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w, h));
 
-    // Background circle color based on status
-    final color = status.toLowerCase() == 'available'
-        ? Colors.green
-        : status.toLowerCase() == 'in_use'
-            ? Colors.orange
-            : Colors.red;
+    final paint = Paint()
+      ..color = fillColor
+      ..style = PaintingStyle.fill;
 
-    // Draw filled circle
-    canvas.drawCircle(
-      Offset(size.width / 2, size.height / 2),
-      36,
-      Paint()..color = color,
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.25)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+
+    // ── Teardrop path ──────────────────────────────────────────────────────
+    // Circle center sits at (w/2, r) where r is the circle radius.
+    // The tip of the pin points downward at (w/2, h - 2).
+    const double r = w * 0.42;
+    const double cx = w / 2;
+    const double cy = r + 2; // slight top padding
+
+    final path = Path();
+    // Left tangent point on circle → tip
+    final double angle = math.asin((cx - 4) / r); // half-angle of the V opening
+    final lx = cx - r * math.cos(angle);
+    final ly = cy + r * math.sin(angle);
+    final rx = cx + r * math.cos(angle);
+    final ry = ly;
+
+    path.moveTo(cx, h - 2); // tip
+    path.lineTo(lx, ly);
+    path.arcTo(
+      Rect.fromCircle(center: Offset(cx, cy), radius: r),
+      math.pi / 2 + angle,
+      -(math.pi + 2 * angle),
+      false,
     );
+    path.lineTo(rx, ry);
+    path.lineTo(cx, h - 2);
+    path.close();
 
-    // Draw white border
-    canvas.drawCircle(
-      Offset(size.width / 2, size.height / 2),
-      36,
+    // Shadow (slightly offset)
+    canvas.save();
+    canvas.translate(1, 2);
+    canvas.drawPath(path, shadowPaint);
+    canvas.restore();
+
+    // Fill
+    canvas.drawPath(path, paint);
+
+    // Border
+    canvas.drawPath(
+      path,
       Paint()
-        ..color = Colors.white
+        ..color = Colors.white.withOpacity(0.6)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3,
+        ..strokeWidth = 2,
     );
 
-    // Draw bike emoji
-    final textPainter = TextPainter(
-      text: const TextSpan(
-        text: '🚲',
-        style: TextStyle(fontSize: 36),
-      ),
-      textDirection: TextDirection.ltr,
+    // White inner circle (dot)
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r * 0.38,
+      Paint()..color = Colors.white,
     );
-    textPainter.layout();
-    textPainter.paint(
-      canvas,
-      Offset(
-        (size.width - textPainter.width) / 2,
-        (size.height - textPainter.height) / 2,
-      ),
-    );
+    // ──────────────────────────────────────────────────────────────────────
 
     final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      size.width.toInt(),
-      size.height.toInt(),
-    );
+    final image = await picture.toImage(w.toInt(), h.toInt());
     final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
 
     return BitmapDescriptor.fromBytes(bytes!.buffer.asUint8List());
@@ -218,119 +258,136 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
       elevation: 3,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Column(
-        children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.blue[50],
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(12),
-                topRight: Radius.circular(12),
-              ),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.pedal_bike, color: Colors.blue),
-                const SizedBox(width: 12),
-                const Text(
-                  'Bike Tracking',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ── Header ──────────────────────────────────────────────────
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
+                  ),
                 ),
-                const Spacer(),
-                if (_historyPoints.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[100],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '${_historyPoints.length} pts',
+                child: Row(
+                  children: [
+                    const Icon(Icons.pedal_bike, color: Colors.blue, size: 20),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Bike Tracking',
                       style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue[800],
+                          fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                    const Spacer(),
+                    if (_historyPoints.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.blue[100],
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '${_historyPoints.length} pts',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[800],
+                          ),
+                        ),
                       ),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, size: 18),
+                      onPressed: _loadData,
+                      tooltip: 'Refresh',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+              ),
+
+              // ── Map ─────────────────────────────────────────────────────
+              AspectRatio(
+                aspectRatio: 16 / 7, // wide landscape for website
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _bikes.isEmpty
+                        ? const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.location_off,
+                                    size: 48, color: Colors.grey),
+                                SizedBox(height: 12),
+                                Text(
+                                  'No bike locations available',
+                                  style: TextStyle(
+                                      fontSize: 13, color: Colors.grey),
+                                ),
+                              ],
+                            ),
+                          )
+                        : GoogleMap(
+                            initialCameraPosition: CameraPosition(
+                              target: _bikes.isNotEmpty
+                                  ? LatLng(
+                                      _bikes[0].latitude, _bikes[0].longitude)
+                                  : _defaultPosition,
+                              zoom: 17.0,
+                            ),
+                            markers: _markers,
+                            polylines: _polylines,
+                            onMapCreated: (controller) =>
+                                _mapController = controller,
+                            myLocationEnabled: false,
+                            myLocationButtonEnabled: true,
+                            zoomControlsEnabled: true,
+                            mapToolbarEnabled: true,
+                          ),
+              ),
+
+              // ── Info bar ────────────────────────────────────────────────
+              if (_bikes.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[50],
+                    borderRadius: const BorderRadius.only(
+                      bottomLeft: Radius.circular(12),
+                      bottomRight: Radius.circular(12),
                     ),
                   ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _loadData,
-                  tooltip: 'Refresh',
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _infoChip(Icons.route,
+                          '${_bikes[0].totalDistanceKm} km', 'Distance'),
+                      _infoChip(Icons.history,
+                          '${_historyPoints.length} pts', 'Trail'),
+                      _infoChip(Icons.directions_bike,
+                          '${_bikes[0].totalRides}', 'Rides'),
+                    ],
+                  ),
                 ),
-              ],
-            ),
+            ],
           ),
-
-          // Map
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _bikes.isEmpty
-                    ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.location_off, size: 64, color: Colors.grey),
-                            SizedBox(height: 16),
-                            Text(
-                              'No bike locations available',
-                              style: TextStyle(fontSize: 16, color: Colors.grey),
-                            ),
-                          ],
-                        ),
-                      )
-                    : GoogleMap(
-                        initialCameraPosition: CameraPosition(
-                          target: _bikes.isNotEmpty
-                              ? LatLng(_bikes[0].latitude, _bikes[0].longitude)
-                              : _defaultPosition,
-                          zoom: 17.0,
-                        ),
-                        markers: _markers,
-                        polylines: _polylines,
-                        onMapCreated: (controller) => _mapController = controller,
-                        myLocationEnabled: false,
-                        myLocationButtonEnabled: true,
-                        zoomControlsEnabled: true,
-                        mapToolbarEnabled: true,
-                      ),
-          ),
-
-          // Info bar sa baba
-          if (_bikes.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(12),
-                  bottomRight: Radius.circular(12),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _infoChip(Icons.route, '${_bikes[0].totalDistanceKm} km', 'Distance'),
-                  _infoChip(Icons.history, '${_historyPoints.length} pts', 'Trail'),
-                  _infoChip(Icons.directions_bike, '${_bikes[0].totalRides}', 'Rides'),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
+        );
   }
 
   Widget _infoChip(IconData icon, String value, String label) {
     return Column(
       children: [
-        Icon(icon, size: 20, color: Colors.blue),
+        Icon(icon, size: 16, color: Colors.blue),
         const SizedBox(height: 2),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Text(value,
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 12)),
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: Colors.grey)),
       ],
     );
   }
@@ -365,7 +422,8 @@ class BikeLocation {
       latitude: (json['latitude'] as num).toDouble(),
       longitude: (json['longitude'] as num).toDouble(),
       status: json['status'] as String,
-      totalDistanceKm: (json['total_distance_km'] as num?)?.toDouble() ?? 0.0,
+      totalDistanceKm:
+          (json['total_distance_km'] as num?)?.toDouble() ?? 0.0,
       totalRides: json['total_rides'] as int? ?? 0,
       lastLocationUpdate: json['last_location_update'] != null
           ? DateTime.parse(json['last_location_update'] as String)
