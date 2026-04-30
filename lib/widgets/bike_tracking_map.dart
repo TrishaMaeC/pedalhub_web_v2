@@ -23,11 +23,10 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   List<LatLng> _historyPoints = [];
   Timer? _refreshTimer;
 
-
   static const int BIKE_ID = 12; // BIKE 1
 
   // ── GOOGLE MAPS API KEY ──────────────────────────────────────────────────
-  static const String GOOGLE_MAPS_API_KEY = 'YOUR_API_KEY_HERE';
+  static const String GOOGLE_MAPS_API_KEY = 'AIzaSyB8_MlXbJKFGO73LhDFqqhxX_gHEziHUA0';
   // ────────────────────────────────────────────────────────────────────────
 
   List<BikeLocation> _bikes = [];
@@ -137,9 +136,9 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
     try {
       final response = await supabase
           .from('borrowing_applications_version2')
-          .select('first_name, last_name, middle_name, contact_number, status')
+          .select('first_name, last_name, middle_name, phone_number, status')
           .eq('assigned_bike_number', bikeNumber)
-          .inFilter('status', ['approved', 'active', 'borrowed'])
+          .inFilter('status', ['in_use'])
           .order('created_at', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -150,7 +149,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
         firstName: response['first_name'] as String? ?? '',
         lastName: response['last_name'] as String? ?? '',
         middleName: response['middle_name'] as String? ?? '',
-        contactNumber: response['contact_number'] as String? ?? '',
+        phoneNumber: response['phone_number'] as String? ?? '',
         status: response['status'] as String? ?? '',
       );
     } catch (e) {
@@ -162,33 +161,77 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
   // ══════════════════════════════════════════════════════════════════════════
   // REVERSE GEOCODING — returns a readable address (street/area level)
   // ══════════════════════════════════════════════════════════════════════════
-  Future<String> _reverseGeocode(double lat, double lng) async {
-    try {
-      final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/geocode/json'
-        '?latlng=$lat,$lng'
-        '&key=$GOOGLE_MAPS_API_KEY',
-      );
+ Future<String> _reverseGeocode(double lat, double lng) async {
+  try {
+    final url = Uri.parse(
+      'https://maps.googleapis.com/maps/api/geocode/json'
+      '?latlng=$lat,$lng'
+      '&key=$GOOGLE_MAPS_API_KEY',
+    );
 
-      final response = await http.get(url);
-      if (response.statusCode != 200) return 'Unknown location';
+    debugPrint('🌐 Geocoding URL: $url');
 
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK' ||
-          data['results'] == null ||
-          (data['results'] as List).isEmpty) {
-        return 'Unknown location';
+    final response = await http.get(url);
+
+    debugPrint('📡 HTTP Status: ${response.statusCode}');
+    debugPrint('📦 Response body: ${response.body}');
+
+    if (response.statusCode != 200) {
+      return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+    }
+
+    final data = json.decode(response.body);
+
+    debugPrint('🗺️ API Status: ${data['status']}');
+
+    if (data['status'] != 'OK') {
+      debugPrint('❌ Error: ${data['error_message']}');
+      return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+    }
+
+    final results = data['results'] as List;
+    if (results.isEmpty) {
+      debugPrint('⚠️ No results found');
+      return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+    }
+
+    final components = results[0]['address_components'] as List;
+
+    String? barangay;
+    String? city;
+
+    for (var c in components) {
+      final types = List<String>.from(c['types']);
+
+      if (types.contains('sublocality') ||
+          types.contains('sublocality_level_1') ||
+          types.contains('neighborhood')) {
+        barangay = c['long_name'];
       }
 
-      // Return the first result's formatted address — human-readable full address
-      final results = data['results'] as List;
-      return results[0]['formatted_address'] as String? ?? 'Unknown location';
-    } catch (e) {
-      debugPrint('Error reverse geocoding: $e');
-      return 'Unknown location';
+      if (types.contains('locality')) {
+        city = c['long_name'];
+      }
     }
-  }
 
+    debugPrint('🏠 Barangay: $barangay');
+    debugPrint('🏙️ City: $city');
+
+    if (barangay != null && city != null) {
+      return '$barangay, $city';
+    } else if (city != null) {
+      return city;
+    } else {
+      final fallback = results[0]['formatted_address'];
+      debugPrint('⚠️ Fallback address: $fallback');
+      return fallback ??
+          '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+    }
+  } catch (e) {
+    debugPrint('💥 Exception: $e');
+    return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+  }
+}
   Future<void> _updateMarkers() async {
     Set<Marker> newMarkers = {};
 
@@ -244,7 +287,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
           children: [
             const Icon(Icons.pedal_bike, color: Colors.blue, size: 28),
             const SizedBox(width: 8),
-            Text('Bike ${bike.bikeNumber}'),
+            Text(' ${bike.bikeNumber}'),
           ],
         ),
         content: SingleChildScrollView(
@@ -300,7 +343,7 @@ class _BikeTrackingMapState extends State<BikeTrackingMap> {
                   '${borrowerInfo.firstName} ${borrowerInfo.middleName} ${borrowerInfo.lastName}',
                 ),
                 const SizedBox(height: 8),
-                _dialogInfoRow(Icons.phone, 'Contact', borrowerInfo.contactNumber),
+                _dialogInfoRow(Icons.phone, 'Contact', borrowerInfo.phoneNumber),
                 const SizedBox(height: 8),
                 _dialogInfoRow(Icons.info_outline, 'Status', borrowerInfo.status),
               ] else ...[
@@ -583,14 +626,14 @@ class BorrowerInfo {
   final String firstName;
   final String lastName;
   final String middleName;
-  final String contactNumber;
+  final String phoneNumber;
   final String status;
 
   BorrowerInfo({
     required this.firstName,
     required this.lastName,
     required this.middleName,
-    required this.contactNumber,
+    required this.phoneNumber,
     required this.status,
   });
 }
