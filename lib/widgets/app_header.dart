@@ -12,7 +12,7 @@ class AppHeader extends StatelessWidget {
       fit: BoxFit.cover,
       errorBuilder: (context, error, stackTrace) {
         return Container(
-          height: 120,
+          height: 40,
           color: Colors.grey[300],
           child: const Center(
             child: Text('Header Image Not Found'),

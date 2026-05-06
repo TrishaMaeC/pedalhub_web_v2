@@ -1086,15 +1086,35 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     // HISTORY TAB
     // =============================
     else {
-      List<String> targetStatuses = (examFilter == 'pass') 
-          ? _historyPassStatuses 
-          : (examFilter == 'fail') ? _historyFailStatuses : [..._historyPassStatuses, ..._historyFailStatuses];
+      List<dynamic> examRecords = [];
 
-      response = await supabase
-          .from('borrowing_applications_version2')
-          .select('*')
-          .inFilter('status', targetStatuses)
-          .ilike('campus', userCampus!);
+      if (examFilter == 'all') {
+        examRecords = await supabase
+            .from('physical_examinations')
+            .select('application_id')
+            .order('examination_date', ascending: false);
+      } else {
+        examRecords = await supabase
+            .from('physical_examinations')
+            .select('application_id')
+            .eq('is_passed', examFilter == 'pass')
+            .order('examination_date', ascending: false);
+      }
+
+      final List<int> appIdsWithExam = examRecords
+          .map<int>((e) => e['application_id'] as int)
+          .toSet()
+          .toList();
+
+      if (appIdsWithExam.isEmpty) {
+        response = [];
+      } else {
+        response = await supabase
+            .from('borrowing_applications_version2')
+            .select('*')
+            .inFilter('id', appIdsWithExam)
+            .ilike('campus', userCampus!);
+      }
 
       for (var app in response) {
         app['_isRenewal'] = _isRenewalStatus(app['status'] as String);
@@ -1967,6 +1987,58 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                   _smallFilterButton('new', 'New'),
                   _smallFilterButton('renewal', 'Renewal'),
                   GestureDetector(
+                    onTap: () async {
+                      await pickClinicEndTime();
+                      // Update the closing time in the database
+                      final today = DateTime.now();
+                      final todayString =
+                          "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
+                      
+                      try {
+                        // Check if record exists
+                        final existing = await supabase
+                            .from('clinic_settings')
+                            .select()
+                            .eq('date', todayString)
+                            .maybeSingle();
+                        
+                        if (existing != null) {
+                          // Update existing record
+                          await supabase.from('clinic_settings').update({
+                            "closing_time":
+                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00"
+                          }).eq('date', todayString);
+                        } else {
+                          // Insert new record
+                          await supabase.from('clinic_settings').insert({
+                            "date": todayString,
+                            "closing_time":
+                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00"
+                          });
+                        }
+                        
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Clinic closing time updated successfully'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                        
+                        // Refresh to apply new time
+                        fetchApplications();
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error updating closing time: $e'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 6),
@@ -1986,6 +2058,8 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                             style: const TextStyle(
                                 fontWeight: FontWeight.bold),
                           ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.edit, size: 14, color: Colors.blue),
                         ],
                       ),
                     ),

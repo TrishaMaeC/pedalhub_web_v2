@@ -50,6 +50,7 @@ dependencies:
   qr_flutter: ^4.1.0
   path_provider: ^2.1.1
   universal_html: ^2.2.4
+  http: ^1.0.0
 
 dev_dependencies:
   flutter_test:
@@ -80,6 +81,7 @@ flutter:
     - assets/fonts/times_new_roman_bold.ttf
     - assets/fonts/times_new_roman_italic.ttf
     - assets/fonts/times_new_roman.ttf
+    - assets/images/bike_marker.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

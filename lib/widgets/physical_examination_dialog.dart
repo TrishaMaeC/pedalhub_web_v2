@@ -258,6 +258,7 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
         'application_id': widget.applicationId,
         'is_renewal': widget.isRenewal,
         'is_reassessment': widget.isReassessment,
+        'is_passed': isPassed, 
         'weight': double.parse(_weightController.text),
         'height': double.parse(_heightController.text),
         'bmi': _bmi,
