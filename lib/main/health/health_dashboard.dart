@@ -209,7 +209,7 @@ class _HealthDashboardState extends State<HealthDashboard> {
             first_name, last_name, control_number, campus, user_type
           )
         ''')
-        .eq('status', 'scheduled')
+        .eq('status', 'medical_scheduled')
         .or(
           'appointment_date.gt.$today,and(appointment_date.eq.$today,appointment_time.gt.$currentTime)',
         )

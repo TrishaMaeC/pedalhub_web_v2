@@ -128,7 +128,6 @@ class _TerminationPageState extends State<TerminationPage> {
   Future<void> _fetchNeedsAction() async {
     try {
       final results = await _fetchWithSession([
-        'returned_overdue',
         'returned_terminated',
         'damaged_bike',
         'missing_bike',
@@ -1163,6 +1162,7 @@ class _TerminationReturnDialogState
       '${widget.application['first_name'] ?? ''} ${widget.application['last_name'] ?? ''}'
           .trim();
 
+
   @override
   void initState() {
     super.initState();
@@ -1301,33 +1301,11 @@ class _TerminationReturnDialogState
   // GENERATE RETURN QR
   // ─────────────────────────────────────────────
   Future<void> _generateReturnQr() async {
-    setState(() => _isSubmitting = true);
-    try {
-      await supabase
-          .from('borrowing_applications_version2')
-          .update({
-        'penalty_status': 'for_termination',
-        'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', widget.application['id']);
-
-      setState(() {
-        _showingQr = true;
-        _isSubmitting = false;
-      });
-
-      _startRealtimeListener();
-      _startPollingFallback();
-    } catch (e) {
-      debugPrint('QR generate error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Error: $e'),
-              backgroundColor: Colors.red),
-        );
-      }
-      setState(() => _isSubmitting = false);
-    }
+    setState(() {
+      _showingQr = true;
+    });
+    _startRealtimeListener();
+    _startPollingFallback();
   }
 
   void _startRealtimeListener() {
@@ -1398,7 +1376,7 @@ class _TerminationReturnDialogState
       shape:
           RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Container(
-        width: 600,
+        width: 700,
         constraints: const BoxConstraints(maxHeight: 750),
         padding: const EdgeInsets.all(28),
         child: Column(
@@ -1439,7 +1417,7 @@ class _TerminationReturnDialogState
             size: 22,
           ),
         ),
-        const SizedBox(width: 14),
+        const SizedBox(width: 18),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

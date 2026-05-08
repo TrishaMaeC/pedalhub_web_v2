@@ -133,20 +133,25 @@ class _ForReturnPageState extends State<ForReturnPage> {
 Future<void> _fetchRenewalBorrows() async {
   if (userCampus == null) return;
   try {
-    // Fetch sessions where status is active, specifically for renewals
-    // We can filter by the application's status or user_type inside the join
     final response = await supabase
-        .from('borrowing_sessions')
-        .select('''
-          *,
-          bike_info:bikes (*),
-          app:borrowing_applications_version2!inner (*)
-        ''')
-        .eq('status', 'active')
-        .eq('app.user_type', selectedRenewalUserType)
-        .ilike('app.campus', userCampus!)
-        .order('created_at', ascending: false);
-
+      .from('borrowing_sessions')
+      .select('''
+        *,
+        bike_info:bikes (*),
+        app:borrowing_applications_version2!inner (*)
+      ''')
+      .eq('status', 'active')
+      .eq('app.user_type', selectedRenewalUserType)
+      .ilike('app.campus', userCampus!)
+      .inFilter('app.status', [
+        'renewal_applied',
+        'renewal_medical_approved', 
+        'renewal_bike_damage_reported',
+        'active_renewal',
+        'renewal_pending_next_sem'
+      ])
+      .order('created_at', ascending: false);
+      
     final sessionsList = List<Map<String, dynamic>>.from(response);
 
     final List<Map<String, dynamic>> enriched = sessionsList.map((session) {
@@ -495,9 +500,15 @@ Future<void> _fetchRenewalBorrows() async {
         ),
         const SizedBox(height: 12),
         // ── Status chips ──
+        // ── Status chips ──
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
+            _renewalStatusChip('renewal_applied', 'Renewal Applied',
+                Icons.pending_actions_rounded, const Color(0xFFFF9800)),
+            const SizedBox(width: 12),
+            _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
+                Icons.search_rounded, const Color(0xFFF57C0)),
             _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
                 Icons.search_rounded, const Color(0xFFF57C00)),
             const SizedBox(width: 12),
@@ -536,6 +547,7 @@ Future<void> _fetchRenewalBorrows() async {
     }
     return const SizedBox.shrink();
   }
+  
 
   Widget _renewalStatusChip(
       String value, String label, IconData icon, Color color) {
@@ -697,12 +709,16 @@ Future<void> _fetchRenewalBorrows() async {
             .toList());
   }
 
-  String _getRenewalEmptyMessage() {
-    switch (selectedRenewalStatus) {
-      case 'renewal_medical_approved':
-        return selectedRenewalUserType == 'student'
-            ? 'No students pending bike inspection'
-            : 'No personnel pending bike inspection';
+ String _getRenewalEmptyMessage() {
+  switch (selectedRenewalStatus) {
+    case 'renewal_applied':
+      return selectedRenewalUserType == 'student'
+          ? 'No students with renewal applications'
+          : 'No personnel with renewal applications';
+    case 'renewal_medical_approved':
+      return selectedRenewalUserType == 'student'
+          ? 'No students pending bike inspection'
+          : 'No personnel pending bike inspection';
       case 'renewal_bike_damage_reported':
         return 'No damage reports to verify';
       case 'active_renewal':
@@ -890,7 +906,8 @@ Future<void> _fetchRenewalBorrows() async {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (status == 'renewal_medical_approved' || 
+              if (status == 'renewal_applied' ||
+                  status == 'renewal_medical_approved' || 
                   status == 'renewal_bike_damage_reported')
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
@@ -908,21 +925,21 @@ Future<void> _fetchRenewalBorrows() async {
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
-              if (status == 'active_renewal')
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00695C),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  onPressed: () => _showReturnDialog(app, 'renewal'),
-                  icon: const Icon(Icons.assignment_return_rounded, size: 18),
-                  label: const Text('Process Return',
-                      style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00695C),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
                 ),
+                onPressed: () => _showReturnDialog(app, 'renewal'),
+                icon: const Icon(Icons.assignment_return_rounded, size: 18),
+                label: const Text('Process Return',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
             ],
           ),
         ],

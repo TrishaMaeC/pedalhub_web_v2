@@ -472,7 +472,7 @@ class _GsoReleaseSignatureDialogState extends State<GsoReleaseSignatureDialog> {
                                   ),
                                 )
                               : DropdownButtonFormField<int>(
-                                value: _selectedBikeId,
+                                initialValue: _selectedBikeId,
                                 decoration: const InputDecoration(
                                   hintText: 'Select a bike to assign',
                                   prefixIcon: Icon(Icons.pedal_bike),

@@ -968,7 +968,7 @@ class _ForReleasePageState extends State<ForReleasePage> {
         'Not assigned yet';
     final isReserved = isPendingStudent &&
         (app['renewal_gso_bike_number'] != null ||
-            app['assigned_bike_number'] != null);;
+            app['assigned_bike_number'] != null);
 
     Color statusColor;
     String statusLabel;

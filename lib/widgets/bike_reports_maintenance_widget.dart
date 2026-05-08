@@ -1237,6 +1237,102 @@ class BikeReportsMaintenanceWidgetState
       _showError(e);
     }
   }
+  
+  Future<void> _markBikeRetrieved(Map<String, dynamic> bike) async {
+  final result = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: _green.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(Icons.search_rounded, color: _green, size: 20),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'Bike Retrieved — ${bike['bike_number']}',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+          ),
+        ),
+      ]),
+      content: const Text(
+        'What is the status of the retrieved bike?',
+        style: TextStyle(fontSize: 14, color: Colors.grey),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, null),
+          child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _red,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () => Navigator.pop(ctx, 'damaged'),
+          icon: const Icon(Icons.build_rounded, size: 16),
+          label: const Text('Set For Maintenance'),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _green,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () => Navigator.pop(ctx, 'available'),
+          icon: const Icon(Icons.check_circle_rounded, size: 16),
+          label: const Text('Mark as Available'),
+        ),
+      ],
+    ),
+  );
+
+  if (result == null) return;
+
+  try {
+    await supabase.from('bikes').update({
+      'status': result,
+      'updated_at': DateTime.now().toIso8601String(),
+      if (result == 'damaged')
+        'maintenance_started_at': DateTime.now().toIso8601String(),
+    }).eq('id', bike['id']);
+
+    final label = result == 'available' ? 'available' : 'set for maintenance';
+    _showSnack(
+      '${bike['bike_number']} marked as $label.',
+      result == 'available' ? _green : _red,
+    );
+    await _loadAll();
+  } catch (e) {
+    _showError(e);
+  }
+}
+
+  Future<void> _markBikeLost(Map<String, dynamic> bike) async {
+    final ok = await _confirmDialog(
+      title: 'Mark as Lost',
+      message: '${bike['bike_number']} will be permanently marked as lost.',
+      confirmLabel: 'Mark Lost',
+      confirmColor: Colors.black87,
+    );
+    if (!ok) return;
+    try {
+      await supabase.from('bikes').update({
+        'status': 'lost_bike',
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', bike['id']);
+      _showSnack('${bike['bike_number']} marked as lost.', Colors.black87);
+      await _loadAll();
+    } catch (e) {
+      _showError(e);
+    }
+  }
 
   // ─────────────────────────────────────────────
   // DIALOG HELPERS
@@ -1379,6 +1475,8 @@ class BikeReportsMaintenanceWidgetState
         return _purple;
       case 'missing_bike':
         return Colors.grey;
+      case 'lost_bike':   
+        return Colors.black54;
       default:
         return Colors.grey;
     }
@@ -1398,6 +1496,8 @@ class BikeReportsMaintenanceWidgetState
         return 'Reserved';
       case 'missing_bike':
         return 'Missing';
+      case 'lost_bike':    
+        return 'Lost';
       default:
         return s.replaceAll('_', ' ');
     }
@@ -1934,6 +2034,9 @@ class BikeReportsMaintenanceWidgetState
                     Icons.bookmark_rounded, _purple, false),
                 _filterChip('missing_bike', 'Missing',
                     Icons.search_off_rounded, Colors.grey, false),
+                const SizedBox(width: 10), // kung hindi Wrap
+                _filterChip('lost_bike', 'Lost',
+                    Icons.not_listed_location_rounded, Colors.black54, false),
               ],
             ),
             const SizedBox(height: 20),
@@ -2162,29 +2265,51 @@ class BikeReportsMaintenanceWidgetState
                 ),
               ],
 
-              // In use / reserved / missing — read-only display, no action
-              if (isInUse || isReserved || isMissing)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: color.withOpacity(0.3)),
-                  ),
-                  child: Text(
-                    isInUse
-                        ? 'Currently in use'
-                        : isReserved
-                            ? 'Reserved by user'
-                            : 'Reported missing',
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: color),
-                  ),
+              // In use / reserved — read-only
+            if (isInUse || isReserved)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: color.withOpacity(0.3)),
                 ),
-            ],
+                child: Text(
+                  isInUse ? 'Currently in use' : 'Reserved by user',
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600, color: color),
+                ),
+              ),
+
+            // Missing — Retrieved + Mark as Lost buttons
+            if (isMissing) ...[
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: () => _markBikeRetrieved(b),
+                icon: const Icon(Icons.check_circle_rounded, size: 16),
+                label: const Text('Retrieved',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.black87,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: () => _markBikeLost(b),
+                icon: const Icon(Icons.not_listed_location_rounded, size: 16),
+                label: const Text('Mark as Lost',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                ),
+              ],
+            ], 
           ),
         ],
       ),

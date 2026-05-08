@@ -565,6 +565,10 @@ class BorrowingApplicationV2Model {
         return 'Terminated';
       case 'active_renewal':
         return 'Active (Renewal)';
+      case 'medical_no_show':
+        return 'No Show';
+      case 'renewal_medical_no_show':
+        return 'No Show (Renewal)';
       default:
         return status.replaceAll('_', ' ').toUpperCase();
     }
@@ -629,8 +633,13 @@ class BorrowingApplicationV2Model {
       case 'completed':
         return Colors.blue;
 
+      case 'medical_no_show':
+      case 'renewal_medical_no_show':
+        return Colors.grey;
+
       default:
         return Colors.grey;
+      
     }
   }
 
@@ -641,7 +650,9 @@ class BorrowingApplicationV2Model {
     if (isStudent) {
       if (financialNeedScore == null &&
           distanceScore == null &&
-          fcfsStudentScore == null) return 'Not yet scored';
+          fcfsStudentScore == null) {
+        return 'Not yet scored';
+      }
       return 'Financial: ${financialNeedScore ?? '-'}/5 · '
           'Distance: ${distanceScore ?? '-'}/5 · '
           'FCFS: ${fcfsStudentScore ?? '-'}/5';

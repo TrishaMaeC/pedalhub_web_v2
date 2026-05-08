@@ -1691,9 +1691,11 @@ class _CertifyDialogState extends State<_CertifyDialog> {
       widget.onApproved();
     } catch (e) {
       debugPrint('Certify error: $e');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );
+      }
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }

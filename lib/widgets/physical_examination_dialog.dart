@@ -519,10 +519,12 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               keyboardType: TextInputType.number,
                               validator: (value) {
                                 if (value == null ||
-                                    value.trim().isEmpty)
+                                    value.trim().isEmpty) {
                                   return 'Required';
-                                if (double.tryParse(value) == null)
+                                }
+                                if (double.tryParse(value) == null) {
                                   return 'Invalid number';
+                                }
                                 return null;
                               },
                             ),
@@ -539,10 +541,12 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               keyboardType: TextInputType.number,
                               validator: (value) {
                                 if (value == null ||
-                                    value.trim().isEmpty)
+                                    value.trim().isEmpty) {
                                   return 'Required';
-                                if (double.tryParse(value) == null)
+                                }
+                                if (double.tryParse(value) == null) {
                                   return 'Invalid number';
+                                }
                                 return null;
                               },
                             ),
@@ -632,8 +636,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               ),
                               validator: (value) {
                                 if (value == null ||
-                                    value.trim().isEmpty)
+                                    value.trim().isEmpty) {
                                   return 'Required';
+                                }
                                 return null;
                               },
                             ),
@@ -651,8 +656,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                               keyboardType: TextInputType.number,
                               validator: (value) {
                                 if (value == null ||
-                                    value.trim().isEmpty)
+                                    value.trim().isEmpty) {
                                   return 'Required';
+                                }
                                 return null;
                               },
                             ),
@@ -736,8 +742,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           prefixIcon: Icon(Icons.person),
                         ),
                         validator: (value) {
-                          if (value == null || value.trim().isEmpty)
+                          if (value == null || value.trim().isEmpty) {
                             return 'Please enter physician name';
+                          }
                           return null;
                         },
                       ),
@@ -750,8 +757,9 @@ class _PhysicalExaminationDialogState extends State<PhysicalExaminationDialog> {
                           prefixIcon: Icon(Icons.badge),
                         ),
                         validator: (value) {
-                          if (value == null || value.trim().isEmpty)
+                          if (value == null || value.trim().isEmpty) {
                             return 'Please enter license number';
+                          }
                           return null;
                         },
                       ),

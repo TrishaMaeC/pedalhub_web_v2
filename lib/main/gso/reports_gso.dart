@@ -39,6 +39,8 @@ class _BikeReportsMaintenancePageState
   int forMaintenanceCount = 0;
   int maintenanceCount = 0;
   int availableCount = 0;
+  int damagedCount = 0;
+  int missingCount = 0;
 
   @override
   void initState() {
@@ -121,6 +123,17 @@ class _BikeReportsMaintenancePageState
           .select('id')
           .eq('status', 'available')
           .ilike('campus', userCampus!);
+      final damaged = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'damaged')
+          .ilike('campus', userCampus!);
+
+      final missing = await supabase
+          .from('bikes')
+          .select('id')
+          .eq('status', 'missing_bike')
+          .ilike('campus', userCampus!);
 
       setState(() {
         submittedCount = submitted;
@@ -130,6 +143,8 @@ class _BikeReportsMaintenancePageState
         maintenanceCount = (maintenance as List).length;
         availableCount = (available as List).length;
         allBikesCount = forMaintenanceCount + maintenanceCount + availableCount;
+        damagedCount = (damaged as List).length;
+        missingCount = (missing as List).length;
       });
     } catch (e) {
       debugPrint('Metrics error: $e');
@@ -224,38 +239,112 @@ class _BikeReportsMaintenancePageState
   }
 
   Future<void> _markInProgress(Map<String, dynamic> report) async {
-    final confirmed = await _showConfirmDialog(
-      title: 'Set For Maintenance',
-      message:
-          'Bike #${report['bike_number']} will be marked as "for_maintenance" and this report set to in progress.',
-      confirmLabel: 'Confirm',
-      confirmColor: const Color(0xFFF57C00),
-    );
-    if (!confirmed) return;
-    try {
-      await supabase.from('bike_reports').update({
-        'status': 'in_progress',
+  final workerController = TextEditingController();
+  final notesController = TextEditingController();
+
+  final result = await showDialog<Map<String, String>>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
+      title: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+              color: const Color(0xFFF57C00).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8)),
+          child: const Icon(Icons.engineering_rounded,
+              color: Color(0xFFF57C00), size: 20),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text('Assign Worker — ${report['bike_number'] ?? 'N/A'}',
+              style: const TextStyle(
+                  fontWeight: FontWeight.bold, fontSize: 15)),
+        ),
+      ]),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Worker Name *',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: workerController,
+            decoration: InputDecoration(
+              hintText: 'Enter worker name',
+              prefixIcon: const Icon(Icons.person_rounded),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Maintenance Notes (optional)',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: notesController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: 'Describe the issue or work needed...',
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, null),
+          child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF57C00),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8))),
+          onPressed: () => Navigator.pop(ctx, {
+            'worker': workerController.text.trim(),
+            'notes': notesController.text.trim(),
+          }),
+          child: const Text('Confirm'),
+        ),
+      ],
+    ),
+  );
+
+  if (result == null || result['worker']!.isEmpty) return;
+
+  try {
+    await supabase.from('bike_reports').update({
+      'status': 'in_progress',
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', report['id']);
+
+    if (report['bike_id'] != null) {
+      await supabase.from('bikes').update({
+        'status': 'maintenance',
+        'maintenance_worker': result['worker'],
+        'maintenance_notes': result['notes']!.isEmpty ? null : result['notes'],
+        'maintenance_started_at': DateTime.now().toIso8601String(),
         'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', report['id']);
-      if (report['bike_id'] != null) {
-        await supabase.from('bikes').update({
-          'status': 'for_maintenance',
-          'maintenance_started_at': DateTime.now().toIso8601String(),
-          'updated_at': DateTime.now().toIso8601String(),
-        }).eq('id', report['bike_id']);
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Bike set for maintenance.'),
-              backgroundColor: Color(0xFFF57C00)),
-        );
-        await _loadAll();
-      }
-    } catch (e) {
-      _showError(e);
+      }).eq('id', report['bike_id']);
     }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Worker "${result['worker']}" assigned to Bike #${report['bike_number'] ?? 'N/A'}.'),
+            backgroundColor: const Color(0xFFF57C00)),
+      );
+      await _loadAll();
+    }
+  } catch (e) {
+    _showError(e);
   }
+}
 
   Future<void> _resolveReport(Map<String, dynamic> report) async {
     final notesController = TextEditingController();
@@ -308,7 +397,7 @@ class _BikeReportsMaintenancePageState
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text('Assign Worker — Bike #${bike['bike_number']}',
+            child: Text('Assign Worker — ${bike['bike_number']}',
                 style: const TextStyle(
                     fontWeight: FontWeight.bold, fontSize: 15)),
           ),
@@ -382,7 +471,7 @@ class _BikeReportsMaintenancePageState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
-                  'Worker "${result['worker']}" assigned to Bike #${bike['bike_number']}.'),
+                  'Worker "${result['worker']}" assigned to ${bike['bike_number']}.'),
               backgroundColor: const Color(0xFFF57C00)),
         );
         await _loadAll();
@@ -396,7 +485,7 @@ class _BikeReportsMaintenancePageState
     final confirmed = await _showConfirmDialog(
       title: 'Set For Maintenance',
       message:
-          'Bike #${bike['bike_number']} will be marked as "for_maintenance". You can assign a worker after.',
+          '${bike['bike_number']} will be marked as "for_maintenance". You can assign a worker after.',
       confirmLabel: 'Confirm',
       confirmColor: const Color(0xFFD32F2F),
     );
@@ -411,7 +500,7 @@ class _BikeReportsMaintenancePageState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
-                  'Bike #${bike['bike_number']} set for maintenance.'),
+                  '${bike['bike_number']} set for maintenance.'),
               backgroundColor: const Color(0xFFD32F2F)),
         );
         await _loadAll();
@@ -425,7 +514,7 @@ class _BikeReportsMaintenancePageState
     final confirmed = await _showConfirmDialog(
       title: 'Mark as Done',
       message:
-          'Bike #${bike['bike_number']} will be set back to available.',
+          '${bike['bike_number']} will be set back to available.',
       confirmLabel: 'Mark Done',
       confirmColor: const Color(0xFF388E3C),
     );
@@ -442,8 +531,116 @@ class _BikeReportsMaintenancePageState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
-                  'Bike #${bike['bike_number']} is now available.'),
+                  '${bike['bike_number']} is now available.'),
               backgroundColor: const Color(0xFF388E3C)),
+        );
+        await _loadAll();
+      }
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
+  Future<void> _markBikeRetrieved(Map<String, dynamic> bike) async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF388E3C).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.search_rounded, color: Color(0xFF388E3C), size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Bike Retrieved — ${bike['bike_number']}',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+          ),
+        ]),
+        content: const Text(
+          'What is the status of the retrieved bike?',
+          style: TextStyle(fontSize: 14, color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD32F2F),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(ctx, 'for_maintenance'),
+            icon: const Icon(Icons.build_rounded, size: 16),
+            label: const Text('Set For Maintenance'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF388E3C),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(ctx, 'available'),
+            icon: const Icon(Icons.check_circle_rounded, size: 16),
+            label: const Text('Mark as Available'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == null) return;
+
+    try {
+      await supabase.from('bikes').update({
+        'status': result,
+        'updated_at': DateTime.now().toIso8601String(),
+        if (result == 'for_maintenance')
+          'maintenance_started_at': DateTime.now().toIso8601String(),
+      }).eq('id', bike['id']);
+
+      if (mounted) {
+        final label = result == 'available' ? 'available' : 'set for maintenance';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${bike['bike_number']} marked as $label.'),
+            backgroundColor: result == 'available'
+                ? const Color(0xFF388E3C)
+                : const Color(0xFFD32F2F),
+          ),
+        );
+        await _loadAll();
+      }
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
+  Future<void> _markBikeLost(Map<String, dynamic> bike) async {
+    final confirmed = await _showConfirmDialog(
+      title: 'Mark as Lost',
+      message: '${bike['bike_number']} will be permanently marked as lost.',
+      confirmLabel: 'Mark Lost',
+      confirmColor: Colors.black87,
+    );
+    if (!confirmed) return;
+    try {
+      await supabase.from('bikes').update({
+        'status': 'lost_bike',
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', bike['id']);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('${bike['bike_number']} marked as lost.'),
+              backgroundColor: Colors.black87),
         );
         await _loadAll();
       }
@@ -461,6 +658,32 @@ class _BikeReportsMaintenancePageState
         SnackBar(
             content: Text('Error: $e'), backgroundColor: Colors.red),
       );
+    }
+  }
+
+  Future<void> _rejectReport(Map<String, dynamic> report) async {
+    final confirmed = await _showConfirmDialog(
+      title: 'Reject Report',
+      message: 'Reject this report from ${report['reporter_name']}?',
+      confirmLabel: 'Reject',
+      confirmColor: const Color(0xFFD32F2F),
+    );
+    if (!confirmed) return;
+    try {
+      await supabase.from('bike_reports').update({
+        'status': 'rejected',
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', report['id']);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Report rejected.'),
+              backgroundColor: Color(0xFFD32F2F)),
+        );
+        await _loadAll();
+      }
+    } catch (e) {
+      _showError(e);
     }
   }
 
@@ -782,7 +1005,15 @@ class _BikeReportsMaintenancePageState
             w.isEmpty ? w : w[0].toUpperCase() + w.substring(1))
         .join(' ');
     final priority = report['priority'] ?? 'medium';
-    final photoUrl = report['photo_url'] as String?;
+    final rawPhotoUrl = report['photo_url'] as String?;
+
+    String? fullPhotoUrl;
+    if (rawPhotoUrl != null && rawPhotoUrl.isNotEmpty) {
+      fullPhotoUrl = supabase.storage
+          .from('report_picture')
+          .getPublicUrl(rawPhotoUrl.replaceFirst('report_picture/', ''));
+        debugPrint('FULL PHOTO URL: $fullPhotoUrl');
+    }
 
     String createdAtLabel = 'N/A';
     try {
@@ -812,18 +1043,18 @@ class _BikeReportsMaintenancePageState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // ── Photo (if exists) ──
-          if (photoUrl != null && photoUrl.isNotEmpty)
+          if (fullPhotoUrl != null && fullPhotoUrl.isNotEmpty)
             ClipRRect(
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(16),
                 topRight: Radius.circular(16),
               ),
               child: GestureDetector(
-                onTap: () => _showPhotoDialog(photoUrl),
+                onTap: () => _showPhotoDialog(fullPhotoUrl!),
                 child: Stack(
                   children: [
                     Image.network(
-                      photoUrl,
+                      fullPhotoUrl,
                       width: double.infinity,
                       height: 200,
                       fit: BoxFit.cover,
@@ -905,7 +1136,7 @@ class _BikeReportsMaintenancePageState
                           ]),
                           const SizedBox(height: 4),
                           Text(
-                              'Bike #${report['bike_number'] ?? 'N/A'}  •  $issueType',
+                              '${report['bike_number'] ?? 'N/A'}  •  $issueType',
                               style: TextStyle(
                                   fontSize: 13,
                                   color: Colors.grey[600])),
@@ -961,7 +1192,7 @@ class _BikeReportsMaintenancePageState
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    if (status == 'submitted')
+                    if (status == 'submitted') ...[
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF1565C0),
@@ -972,13 +1203,28 @@ class _BikeReportsMaintenancePageState
                               borderRadius: BorderRadius.circular(8)),
                         ),
                         onPressed: () => _acknowledgeReport(report),
-                        icon: const Icon(Icons.visibility_rounded,
-                            size: 16),
+                        icon: const Icon(Icons.visibility_rounded, size: 16),
                         label: const Text('Acknowledge',
                             style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13)),
+                                fontWeight: FontWeight.w600, fontSize: 13)),
                       ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD32F2F),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                        ),
+                        onPressed: () => _rejectReport(report),
+                        icon: const Icon(Icons.cancel_rounded, size: 16),
+                        label: const Text('Reject',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 13)),
+                      ),
+                    ],
                     if (status == 'under_review') ...[
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
@@ -1044,7 +1290,7 @@ class _BikeReportsMaintenancePageState
     );
   }
 
-  void _showPhotoDialog(String photoUrl) {
+  void _showPhotoDialog(String fullphotoUrl) {
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
@@ -1054,7 +1300,7 @@ class _BikeReportsMaintenancePageState
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Image.network(
-                photoUrl,
+                fullphotoUrl,
                 fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => Container(
                   padding: const EdgeInsets.all(32),
@@ -1137,30 +1383,19 @@ class _BikeReportsMaintenancePageState
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  _filterChip(
-                      'all',
-                      'All Bikes',
-                      Icons.pedal_bike_rounded,
-                      const Color(0xFF1565C0),
-                      false),
+                  _filterChip('all', 'All Bikes', Icons.pedal_bike_rounded, const Color(0xFF1565C0), false),
                   const SizedBox(width: 10),
-                  _filterChip(
-                      'for_maintenance',
-                      'For Maintenance',
-                      Icons.warning_amber_rounded,
-                      const Color(0xFFD32F2F),
-                      false),
+                  _filterChip('for_maintenance', 'For Maintenance', Icons.warning_amber_rounded, const Color(0xFFD32F2F), false),
                   const SizedBox(width: 10),
-                  _filterChip(
-                      'maintenance',
-                      'Being Fixed',
-                      Icons.engineering_rounded,
-                      const Color(0xFFF57C00),
-                      false),
+                  _filterChip('damaged', 'Damaged', Icons.warning_amber_rounded, const Color(0xFFD32F2F), false),
                   const SizedBox(width: 10),
-                  _filterChip('available', 'Available',
-                      Icons.check_circle_rounded,
-                      const Color(0xFF388E3C), false),
+                  _filterChip('maintenance', 'Being Fixed', Icons.engineering_rounded, const Color(0xFFF57C00), false),
+                  const SizedBox(width: 10),
+                  _filterChip('available', 'Available', Icons.check_circle_rounded, const Color(0xFF388E3C), false),
+                  const SizedBox(width: 10),
+                  _filterChip('missing_bike', 'Missing', Icons.search_off_rounded, Colors.grey, false),
+                  const SizedBox(width: 10),
+                  _filterChip('lost_bike', 'Lost', Icons.not_listed_location_rounded, Colors.black54, false),
                 ],
               ),
             ),
@@ -1183,16 +1418,33 @@ class _BikeReportsMaintenancePageState
     final isAvailable = status == 'available';
 
     final Color color = isForMaintenance
-        ? const Color(0xFFD32F2F)
-        : isBeingFixed
-            ? const Color(0xFFF57C00)
-            : const Color(0xFF388E3C);
+    ? const Color(0xFFD32F2F)
+    : isBeingFixed
+        ? const Color(0xFFF57C00)
+        : isAvailable
+            ? const Color(0xFF388E3C)
+            : status == 'missing_bike'
+                ? Colors.grey
+                : status == 'lost_bike'
+                    ? Colors.black54
+                    : status == 'damaged'
+                        ? const Color(0xFF7B1FA2)
+                        : Colors.grey;
 
     final String statusLabel = isForMaintenance
         ? 'For Maintenance'
         : isBeingFixed
             ? 'Being Fixed'
-            : 'Available';
+            : isAvailable
+                ? 'Available'
+                : status == 'missing_bike'
+                    ? 'Missing'
+                    : status == 'lost_bike'
+                        ? 'Lost'
+                        : status == 'damaged'
+                            ? 'Damaged'
+                            : status;
+
 
     String lastMaintenanceLabel = 'Never';
     if (bike['last_maintenance_date'] != null) {
@@ -1256,7 +1508,7 @@ class _BikeReportsMaintenancePageState
                   children: [
                     Row(children: [
                       Text(
-                        'Bike #${bike['bike_number']}',
+                        '${bike['bike_number']}',
                         style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -1349,6 +1601,33 @@ class _BikeReportsMaintenancePageState
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              if (status == 'missing_bike') ...[
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF388E3C),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () => _markBikeRetrieved(bike),
+                  icon: const Icon(Icons.check_circle_rounded, size: 16),
+                  label: const Text('Retrieved',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black87,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () => _markBikeLost(bike),
+                  icon: const Icon(Icons.not_listed_location_rounded, size: 16),
+                  label: const Text('Mark as Lost',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                ),
+              ],
               if (isForMaintenance)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(

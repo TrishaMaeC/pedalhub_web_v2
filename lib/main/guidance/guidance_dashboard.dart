@@ -8,6 +8,9 @@ import 'package:signature/signature.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
+import 'package:printing/printing.dart';
+import 'dart:html' as html;
 
 class OsdDashboardPage extends StatefulWidget {
   const OsdDashboardPage({super.key});
@@ -54,7 +57,7 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     _mainTabController = TabController(length: 3, vsync: this);
     _mainTabController.addListener(() {
       if (_mainTabController.indexIsChanging) return;
-      if (_mainTabController.index == 1) _fetchNewApplications();
+      if (_mainTabController.index == 0) _fetchNewApplications();
       if (_mainTabController.index == 2) _fetchDisciplineCases();
     });
     _loadUserCampusAndAll();
@@ -119,11 +122,12 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
           .ilike('campus', userCampus!)
           .count(CountOption.exact);
 
+      // FIX: Count approved renewals by is_hrmo_osd_approved + renewal_count
       final approved = await supabase
           .from('borrowing_applications_version2')
           .select('id')
           .eq('is_hrmo_osd_approved', true)
-          .eq('status', 'renewal_osd_approved')
+          .gt('renewal_count', 0)  // Only renewals
           .eq('user_type', 'student')
           .ilike('campus', userCampus!)
           .count(CountOption.exact);
@@ -145,11 +149,12 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
           .ilike('campus', userCampus!)
           .count(CountOption.exact);
 
+      // FIX: Count approved new applications by is_hrmo_osd_approved + renewal_count == 0
       final newApproved = await supabase
           .from('borrowing_applications_version2')
           .select('id')
           .eq('is_hrmo_osd_approved', true)
-          .eq('status', 'osd_approved')
+          .eq('renewal_count', 0)  // Only new applications
           .eq('user_type', 'student')
           .ilike('campus', userCampus!)
           .count(CountOption.exact);
@@ -200,13 +205,39 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
 
   Future<void> _fetchApplications() async {
     if (userCampus == null) return;
-    final response = await supabase
-        .from('borrowing_applications_version2')
-        .select('*')
-        .eq('status', selectedStatus)
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!)
-        .order('renewal_applied_at', ascending: false);
+    
+    late final List response;
+    
+    if (selectedStatus == 'renewal_applied') {
+      // Pending renewals
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('status', 'renewal_applied')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('renewal_applied_at', ascending: false);
+    } else if (selectedStatus == 'renewal_osd_approved') {
+      // Approved renewals - use boolean column + renewal_count check
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('is_hrmo_osd_approved', true)
+          .gt('renewal_count', 0)  // Only renewals (renewal_count > 0)
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('renewal_applied_at', ascending: false);
+    } else {
+      // Rejected renewals
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('status', 'renewal_osd_rejected')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('renewal_applied_at', ascending: false);
+    }
+    
     setState(() => applications = List<Map<String, dynamic>>.from(response));
   }
 
@@ -214,13 +245,38 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
 
   Future<void> _fetchNewApplications() async {
     if (userCampus == null) return;
-    final response = await supabase
-        .from('borrowing_applications_version2')
-        .select('*')
-        .eq('status', selectedNewAppStatus)
-        .eq('user_type', 'student')
-        .ilike('campus', userCampus!)
-        .order('created_at', ascending: false);
+    
+    late final List response;
+    
+    if (selectedNewAppStatus == 'pending_application') {
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('status', 'pending_application')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('created_at', ascending: false);
+    } else if (selectedNewAppStatus == 'osd_approved') {
+      // Use the boolean column instead of status
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('is_hrmo_osd_approved', true)
+          .eq('renewal_count', 0)  // Important: to exclude renewals!
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('created_at', ascending: false);
+    } else {
+      // Rejected
+      response = await supabase
+          .from('borrowing_applications_version2')
+          .select('*')
+          .eq('status', 'osd_rejected')
+          .eq('user_type', 'student')
+          .ilike('campus', userCampus!)
+          .order('created_at', ascending: false);
+    }
+    
     setState(() => newApplications = List<Map<String, dynamic>>.from(response));
   }
 
@@ -373,9 +429,6 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
               labelStyle:
                   const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
               tabs: [
-                const Tab(
-                    icon: Icon(Icons.how_to_reg_rounded),
-                    text: 'Renewal Approval'),
                 Tab(
                   icon: Stack(
                     clipBehavior: Clip.none,
@@ -401,6 +454,9 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                   ),
                   text: 'New Applications',
                 ),
+                const Tab(
+                    icon: Icon(Icons.how_to_reg_rounded),
+                    text: 'Renewal Approval'),
                 Tab(
                   icon: Stack(
                     clipBehavior: Clip.none,
@@ -438,8 +494,8 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
                 : TabBarView(
                     controller: _mainTabController,
                     children: [
-                      _buildRenewalTab(),
                       _buildNewApplicationsTab(),
+                      _buildRenewalTab(),
                       _buildDisciplineTab(),
                     ],
                   ),
@@ -599,8 +655,14 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
     final controlNumber = app['control_number'] ?? 'N/A';
     final renewalCount = app['renewal_count'] ?? 0;
     final status = app['status'] ?? '';
+    
+    // FIX: Check is_hrmo_osd_approved for renewals
+    final isHrmoOsdApproved = app['is_hrmo_osd_approved'] == true;
     final isPending = status == 'renewal_applied';
-    final isApproved = status == 'renewal_osd_approved';
+    final isRejected = status == 'renewal_osd_rejected';
+    
+    // Determine approval status: approved if is_hrmo_osd_approved is true AND not explicitly rejected
+    final bool isApproved = isHrmoOsdApproved && !isRejected;
 
     final Color statusColor = isPending
         ? const Color(0xFFF57C00)
@@ -678,19 +740,26 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
             _statusBadge(statusLabel, statusColor),
           ]),
         ),
-        if (isPending)
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.end,
-            children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.end,
+          children: [
+            // Details button for ALL statuses
+            _actionButton(
+                label: 'Details',
+                icon: Icons.info_outline_rounded,
+                color: const Color(0xFF1976D2),
+                onPressed: () => _showRenewalDetailsDialog(app,context)),
+            // Certify button only for pending
+            if (isPending)
               _actionButton(
                   label: 'Certify',
                   icon: Icons.verified_rounded,
                   color: const Color(0xFF388E3C),
                   onPressed: () => _showCertifyRenewalDialog(app)),
-            ],
-          ),
+          ],
+        ),
       ]),
     );
   }
@@ -837,31 +906,37 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
         children: newApplications.map((app) => _newAppCard(app)).toList());
   }
 
-  Widget _newAppCard(Map<String, dynamic> app) {
-    final firstName = app['first_name'] ?? '';
-    final lastName = app['last_name'] ?? '';
-    final idNo = app['id_no'] ?? 'N/A';
-    final collegeOffice = app['college_office'] ?? 'N/A';
-    final controlNumber = app['control_number'] ?? 'N/A';
-    final status = app['status'] ?? '';
-    final isPending = status == 'pending_application';
-    final isApproved = status == 'osd_approved';
+    Widget _newAppCard(Map<String, dynamic> app) {
+      final firstName = app['first_name'] ?? '';
+      final lastName = app['last_name'] ?? '';
+      final idNo = app['id_no'] ?? 'N/A';
+      final collegeOffice = app['college_office'] ?? 'N/A';
+      final controlNumber = app['control_number'] ?? 'N/A';
+      final status = app['status'] ?? '';
+      
+      // FIX: Check is_hrmo_osd_approved first before status
+      final isHrmoOsdApproved = app['is_hrmo_osd_approved'] == true;
+      final isPending = status == 'pending_application';
+      final isRejected = status == 'osd_rejected';
+      
+      // Determine actual approval status
+      final bool isApproved = isHrmoOsdApproved && !isRejected;
 
-    final Color statusColor = isPending
-        ? const Color(0xFFF57C00)
-        : isApproved
-            ? const Color(0xFF388E3C)
-            : const Color(0xFFD32F2F);
-    final String statusLabel = isPending
-        ? 'Pending Review'
-        : isApproved
-            ? 'Approved'
-            : 'Rejected';
-    final IconData statusIcon = isPending
-        ? Icons.pending_actions_rounded
-        : isApproved
-            ? Icons.check_circle_rounded
-            : Icons.cancel_rounded;
+      final Color statusColor = isPending
+          ? const Color(0xFFF57C00)
+          : isApproved
+              ? const Color(0xFF388E3C)
+              : const Color(0xFFD32F2F);
+      final String statusLabel = isPending
+          ? 'Pending Review'
+          : isApproved
+              ? 'Approved'
+              : 'Rejected';
+      final IconData statusIcon = isPending
+          ? Icons.pending_actions_rounded
+          : isApproved
+              ? Icons.check_circle_rounded
+              : Icons.cancel_rounded;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -907,19 +982,26 @@ class _OsdDashboardPageState extends State<OsdDashboardPage>
             _statusBadge(statusLabel, statusColor),
           ]),
         ),
-        if (isPending)
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.end,
-            children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.end,
+          children: [
+            // Details button for ALL statuses
+            _actionButton(
+                label: 'Details',
+                icon: Icons.info_outline_rounded,
+                color: const Color(0xFF1976D2),
+                onPressed: () => _showNewAppDetailsDialog(app, context)),
+            // Certify button only for pending
+            if (isPending)
               _actionButton(
                   label: 'Certify',
                   icon: Icons.verified_rounded,
                   color: const Color(0xFF388E3C),
                   onPressed: () => _showCertifyNewAppDialog(app)),
-            ],
-          ),
+          ],
+        ),
       ]),
     );
   }
@@ -1625,8 +1707,9 @@ class _CertifyDialogState extends State<_CertifyDialog> {
       String fileName;
       if (_isDrawMode) {
         sigBytes = await _signatureController.toPngBytes();
-        if (sigBytes == null)
+        if (sigBytes == null) {
           throw Exception('Failed to export drawn signature');
+        }
         fileName = 'drawn_signature.png';
       } else {
         sigBytes = _uploadedImageBytes;
@@ -2388,5 +2471,506 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
                     fontSize: 12, fontWeight: FontWeight.w600))),
       ]),
     );
+  }
+}
+
+void _showRenewalDetailsDialog(Map<String, dynamic> app, BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (context) => _RenewalDetailsDialog(application: app),
+  );
+}
+
+void _showNewAppDetailsDialog(Map<String, dynamic> app, BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (context) => _NewAppDetailsDialog(application: app),
+  );
+}
+
+class _RenewalDetailsDialog extends StatelessWidget {
+  final Map<String, dynamic> application;
+  
+
+  const _RenewalDetailsDialog({required this.application});
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName = application['first_name'] ?? '';
+    final lastName = application['last_name'] ?? '';
+    final idNo = application['id_no'] ?? 'N/A';
+    final collegeOffice = application['college_office'] ?? 'N/A';
+    final controlNumber = application['control_number'] ?? 'N/A';
+    final phoneNumber = application['phone_number'] ?? 'N/A';
+    final email = application['email_address'] ?? 'N/A';
+    final renewalCount = application['renewal_count'] ?? 0;
+    
+    // PDF URLs based on schema
+    final renewalPdfUrl = application['renewal_pdf_url'] as String?;
+    final renewalHrmoOsdPdfUrl = application['renewal_hrmo_osd_pdf_url'] as String?;
+    
+    // Use the OSD PDF if available, otherwise use renewal PDF
+    final pdfUrl = renewalHrmoOsdPdfUrl ?? renewalPdfUrl;
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 700,
+        constraints: const BoxConstraints(maxHeight: 800),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFFD32F2F), Color(0xFFE57373)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.info_outline_rounded,
+                      color: Colors.white, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Renewal Application Details',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      Text(
+                        '$firstName $lastName',
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Personal Information Section
+                    _sectionHeader('Personal Information'),
+                    const SizedBox(height: 12),
+                    _detailRow('Full Name', '$firstName $lastName'),
+                    _detailRow('ID Number', idNo),
+                    _detailRow('Program/Office', collegeOffice),
+                    _detailRow('Control Number', controlNumber),
+                    _detailRow('Phone Number', phoneNumber),
+                    _detailRow('Email Address', email),
+                    _detailRow('Renewal Count', 'Renewal #$renewalCount'),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Application Status Section
+                    _sectionHeader('Application Status'),
+                    const SizedBox(height: 12),
+                    _detailRow('Status', application['status'] ?? 'N/A'),
+                    _detailRow('OSD Approved', 
+                        application['is_hrmo_osd_approved'] == true ? 'Yes' : 'No'),
+                    
+                    if (application['renewal_hrmo_osd_signatory_name'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Certified By', 
+                          application['renewal_hrmo_osd_signatory_name']),
+                    ],
+                    
+                    if (application['renewal_hrmo_osd_rejection_reason'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Rejection Reason', 
+                          application['renewal_hrmo_osd_rejection_reason']),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (pdfUrl != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _viewPdf(context, pdfUrl),
+                    icon: const Icon(Icons.picture_as_pdf_rounded),
+                    label: const Text('View Application Form'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFD32F2F),
+                      side: const BorderSide(color: Color(0xFFD32F2F)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () => _printPdf(context, pdfUrl),
+                    icon: const Icon(Icons.print_rounded),
+                    label: const Text('Print'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFD32F2F),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ] else
+                  Text(
+                    'No application form available',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF1A1A1A),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A1A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _viewPdf(BuildContext context, String pdfUrl) {
+    html.window.open(pdfUrl, '_blank');
+  }
+
+  void _printPdf(BuildContext context, String pdfUrl) async {
+    try {
+      final response = await http.get(Uri.parse(pdfUrl));
+
+      if (response.statusCode == 200) {
+        final pdfBytes = response.bodyBytes;
+
+        await Printing.layoutPdf(
+          onLayout: (format) async => pdfBytes,
+        );
+      } else {
+        throw Exception('Failed to load PDF');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading PDF: $e')),
+      );
+    }
+  }
+}
+
+class _NewAppDetailsDialog extends StatelessWidget {
+  final Map<String, dynamic> application;
+
+  const _NewAppDetailsDialog({required this.application});
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName = application['first_name'] ?? '';
+    final lastName = application['last_name'] ?? '';
+    final idNo = application['id_no'] ?? 'N/A';
+    final collegeOffice = application['college_office'] ?? 'N/A';
+    final controlNumber = application['control_number'] ?? 'N/A';
+    final phoneNumber = application['phone_number'] ?? 'N/A';
+    final email = application['email_address'] ?? 'N/A';
+    
+    // PDF URLs based on schema
+    final applicationPdfUrl = application['application_pdf_url'] as String?;
+    final osdHrmoPdfUrl = application['osd_hrmo_pdf_url'] as String?;
+    
+    // Use the OSD PDF if available, otherwise use application PDF
+    final pdfUrl = osdHrmoPdfUrl ?? applicationPdfUrl;
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 700,
+        constraints: const BoxConstraints(maxHeight: 800),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF1565C0), Color(0xFF42A5F5)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.info_outline_rounded,
+                      color: Colors.white, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Application Details',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      Text(
+                        '$firstName $lastName',
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Personal Information Section
+                    _sectionHeader('Personal Information'),
+                    const SizedBox(height: 12),
+                    _detailRow('Full Name', '$firstName $lastName'),
+                    _detailRow('ID Number', idNo),
+                    _detailRow('Program/Office', collegeOffice),
+                    _detailRow('Control Number', controlNumber),
+                    _detailRow('Phone Number', phoneNumber),
+                    _detailRow('Email Address', email),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Application Status Section
+                    _sectionHeader('Application Status'),
+                    const SizedBox(height: 12),
+                    _detailRow('Status', application['status'] ?? 'N/A'),
+                    _detailRow('OSD Approved', 
+                        application['is_hrmo_osd_approved'] == true ? 'Yes' : 'No'),
+                    
+                    if (application['hrmo_osd_name'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Certified By', application['hrmo_osd_name']),
+                    ],
+                    
+                    if (application['hrmo_osd_date_signed'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Date Signed', 
+                          DateFormat('MMM dd, yyyy').format(
+                            DateTime.parse(application['hrmo_osd_date_signed'].toString())
+                          )),
+                    ],
+                    
+                    if (application['rejection_reason'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Rejection Reason', application['rejection_reason']),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (pdfUrl != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _viewPdf(context, pdfUrl),
+                    icon: const Icon(Icons.picture_as_pdf_rounded),
+                    label: const Text('View Application Form'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF1565C0),
+                      side: const BorderSide(color: Color(0xFF1565C0)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () => _printPdf(context, pdfUrl),
+                    icon: const Icon(Icons.print_rounded),
+                    label: const Text('Print'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1565C0),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ] else
+                  Text(
+                    'No application form available',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF1A1A1A),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A1A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _viewPdf(BuildContext context, String pdfUrl) {
+    html.window.open(pdfUrl, '_blank');
+  }
+
+  void _printPdf(BuildContext context, String pdfUrl) async {
+    try {
+      final response = await http.get(Uri.parse(pdfUrl));
+
+      if (response.statusCode == 200) {
+        final pdfBytes = response.bodyBytes;
+
+        await Printing.layoutPdf(
+          onLayout: (format) async => pdfBytes,
+        );
+      } else {
+        throw Exception('Failed to load PDF');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading PDF: $e')),
+      );
+    }
   }
 }
