@@ -247,6 +247,7 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
         .from('clinic_settings')
         .select()
         .eq('date', todayString)
+        .eq('campus', userCampus!)
         .maybeSingle();
 
     if (response == null) {
@@ -348,7 +349,8 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                             await supabase.from('clinic_settings').insert({
                               "date": todayString,
                               "closing_time":
-                                  "${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}:00"
+                                  "${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}:00",
+                              "campus": userCampus!,
                             });
                             setState(() => clinicEndTime = selectedTime);
                             Navigator.pop(context);
@@ -2076,6 +2078,7 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                             .from('clinic_settings')
                             .select()
                             .eq('date', todayString)
+                            .eq('campus', userCampus!) 
                             .maybeSingle();
                         
                         if (existing != null) {
@@ -2083,13 +2086,14 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                           await supabase.from('clinic_settings').update({
                             "closing_time":
                                 "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00"
-                          }).eq('date', todayString);
+                          }).eq('date', todayString).eq('campus', userCampus!);
                         } else {
                           // Insert new record
                           await supabase.from('clinic_settings').insert({
                             "date": todayString,
                             "closing_time":
-                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00"
+                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00",
+                            "campus": userCampus!,
                           });
                         }
                         

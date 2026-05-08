@@ -511,7 +511,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
       if (mounted) {
         _showSnack(
           e.toString().contains('duplicate')
-              ? 'A slot already exists for this date and time.'
+              ? 'A slot already exists for this date and time for this campus.'
               : 'Error: ${e.toString()}',
           isError: true,
         );

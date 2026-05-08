@@ -732,7 +732,7 @@ Future<void> _fetchRenewalBorrows() async {
     }
   }
 
-  Widget _renewalInspectionCard(Map<String, dynamic> app) {
+Widget _renewalInspectionCard(Map<String, dynamic> app) {
     final firstName = app['first_name'] ?? '';
     final lastName = app['last_name'] ?? '';
     final userType = app['user_type'] ?? 'student';
@@ -746,6 +746,11 @@ Future<void> _fetchRenewalBorrows() async {
     IconData statusIcon;
 
     switch (status) {
+      case 'renewal_applied':
+        statusColor = const Color(0xFFFF9800);
+        statusLabel = 'Renewal Applied';
+        statusIcon = Icons.pending_actions_rounded;
+        break;
       case 'renewal_medical_approved':
         statusColor = const Color(0xFFF57C00);
         statusLabel = 'Pending Inspection';
@@ -785,9 +790,9 @@ Future<void> _fetchRenewalBorrows() async {
               offset: const Offset(0, 4))
         ],
         border: Border.all(
-          color: isDamageReported 
+          color: isDamageReported
               ? const Color(0xFFD32F2F).withOpacity(0.4)
-              : statusColor.withOpacity(0.2), 
+              : statusColor.withOpacity(0.2),
           width: isDamageReported ? 2 : 1,
         ),
       ),
@@ -821,8 +826,8 @@ Future<void> _fetchRenewalBorrows() async {
                       const SizedBox(width: 6),
                       _badge(
                         userType == 'student' ? 'Student' : 'Personnel',
-                        userType == 'student' 
-                            ? const Color(0xFF1565C0) 
+                        userType == 'student'
+                            ? const Color(0xFF1565C0)
                             : const Color(0xFF388E3C),
                       ),
                     ]),
@@ -843,7 +848,8 @@ Future<void> _fetchRenewalBorrows() async {
                       if (suspensionCount > 0) ...[
                         const SizedBox(width: 12),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: Colors.red[100],
                             borderRadius: BorderRadius.circular(4),
@@ -866,7 +872,7 @@ Future<void> _fetchRenewalBorrows() async {
               ),
             ],
           ),
-          
+
           // Show damage details if reported
           if (isDamageReported && app['renewal_gso_damage_remarks'] != null) ...[
             const SizedBox(height: 12),
@@ -875,13 +881,14 @@ Future<void> _fetchRenewalBorrows() async {
               decoration: BoxDecoration(
                 color: const Color(0xFFFFEBEE),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFD32F2F).withOpacity(0.3)),
+                border: Border.all(
+                    color: const Color(0xFFD32F2F).withOpacity(0.3)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    const Icon(Icons.warning_amber_rounded, 
+                    const Icon(Icons.warning_amber_rounded,
                         color: Color(0xFFD32F2F), size: 16),
                     const SizedBox(width: 6),
                     const Text('Self-Reported Damage',
@@ -899,46 +906,28 @@ Future<void> _fetchRenewalBorrows() async {
               ),
             ),
           ],
-          
+
           const SizedBox(height: 16),
-          
-          // Action buttons based on status
+
+          // Action buttons
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (status == 'renewal_applied' ||
-                  status == 'renewal_medical_approved' || 
-                  status == 'renewal_bike_damage_reported')
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1565C0),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  onPressed: () => _showRenewalBikeInspectionDialog(app),
-                  icon: const Icon(Icons.bike_scooter_rounded, size: 18),
-                  label: Text(
-                    isDamageReported ? 'Verify Damage' : 'Inspect Bike',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              const SizedBox(width: 8),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00695C),
+                  backgroundColor: const Color(0xFF1565C0),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(
                       horizontal: 16, vertical: 10),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8)),
                 ),
-                onPressed: () => _showReturnDialog(app, 'renewal'),
-                icon: const Icon(Icons.assignment_return_rounded, size: 18),
-                label: const Text('Process Return',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () => _showRenewalBikeInspectionDialog(app),
+                icon: const Icon(Icons.bike_scooter_rounded, size: 18),
+                label: Text(
+                  isDamageReported ? 'Verify Damage & Return' : 'Inspect & Return',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ),
             ],
           ),
@@ -946,6 +935,7 @@ Future<void> _fetchRenewalBorrows() async {
       ),
     );
   }
+
 
   // ── Short Term Borrows ──────────────────────────────────────
 

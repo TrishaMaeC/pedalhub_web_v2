@@ -101,7 +101,7 @@ class GsoDrawer extends StatelessWidget {
                         ),
                         const SizedBox(height: 15),
                         const Text(
-                          'GSO Alangilan',
+                          'General Services',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 28,

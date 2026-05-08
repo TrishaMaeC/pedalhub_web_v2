@@ -393,6 +393,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     final passwordController = TextEditingController();
     String selectedRole = _roles.first;
     String selectedCampus = _campuses.first;
+    bool obscurePassword = true;
 
     showDialog(
       context: context,
@@ -415,12 +416,16 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: passwordController,
-                  decoration: const InputDecoration(
+                  obscureText: obscurePassword,  // ← was: obscureText: true
+                  decoration: InputDecoration(
                     labelText: 'Password',
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscurePassword ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setDialogState(() => obscurePassword = !obscurePassword),
+                    ),
                   ),
-                  obscureText: true,
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
@@ -492,6 +497,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     final passwordController = TextEditingController();
     String selectedRole = account['role'];
     String selectedCampus = account['campus'] ?? _campuses.first;
+    bool obscurePassword = true;
 
     showDialog(
       context: context,
@@ -514,12 +520,16 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: passwordController,
-                  decoration: const InputDecoration(
+                  obscureText: obscurePassword,  // ← was: obscureText: true
+                  decoration: InputDecoration(
                     labelText: 'New Password (leave blank to keep)',
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscurePassword ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setDialogState(() => obscurePassword = !obscurePassword),
+                    ),
                   ),
-                  obscureText: true,
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(

@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:pedalhub_admin/widgets/app_header.dart';
 import 'package:pedalhub_admin/login_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:pedalhub_admin/widgets/rejection_reason_dialog.dart';
 import 'package:signature/signature.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
+import 'package:printing/printing.dart';
+import 'dart:html' as html;
 
 class HrmoRenewalApprovalPage extends StatefulWidget {
   const HrmoRenewalApprovalPage({super.key});
@@ -280,65 +282,6 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
         onApproved: _loadAll,
         tableSource: _AppTableSource.newApplication,
       ),
-    );
-  }
-
-  void _showRejectDialog(Map<String, dynamic> app) {
-    final applicantName = '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim();
-    RejectionReasonDialog.show(
-      context: context,
-      applicantName: applicantName,
-      onReject: (reason) async {
-        try {
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'renewal_hrmo_rejected',
-            'renewal_hrmo_osd_rejection_reason': reason,
-          }).eq('id', app['id']);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Renewal application rejected.'), backgroundColor: Colors.orange),
-            );
-          }
-          await _loadAll();
-        } catch (e) {
-          debugPrint('Reject error: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Error rejecting: $e'), backgroundColor: Colors.red),
-            );
-          }
-        }
-      },
-    );
-  }
-
-  void _showRejectNewAppDialog(Map<String, dynamic> app) {
-    final applicantName = '${app['first_name'] ?? ''} ${app['last_name'] ?? ''}'.trim();
-    RejectionReasonDialog.show(
-      context: context,
-      applicantName: applicantName,
-      onReject: (reason) async {
-        try {
-          await supabase.from('borrowing_applications_version2').update({
-            'status': 'hrmo_rejected',
-            'rejection_reason': reason,
-            'hrmo_osd_date_signed': DateTime.now().toIso8601String(),
-          }).eq('id', app['id']);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Application rejected.'), backgroundColor: Colors.orange),
-            );
-          }
-          await _loadAll();
-        } catch (e) {
-          debugPrint('Reject new app error: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Error rejecting: $e'), backgroundColor: Colors.red),
-            );
-          }
-        }
-      },
     );
   }
 
@@ -690,10 +633,21 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
             ),
           ]),
         ),
-        if (isPending)
-          Wrap(
-            spacing: 8, runSpacing: 8, alignment: WrapAlignment.end,
-            children: [
+        Wrap(
+          spacing: 8, runSpacing: 8, alignment: WrapAlignment.end,
+          children: [
+            // Details button for ALL statuses
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1976D2), foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+              onPressed: () => _showNewAppDetailsDialog(app, context),
+              icon: const Icon(Icons.info_outline_rounded, size: 18),
+              label: const Text('Details', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            // Certify button only for pending
+            if (isPending)
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF388E3C), foregroundColor: Colors.white,
@@ -703,17 +657,8 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
                 icon: const Icon(Icons.verified_rounded, size: 18),
                 label: const Text('Certify', style: TextStyle(fontWeight: FontWeight.w600)),
               ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFD32F2F), foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-                onPressed: () => _showRejectNewAppDialog(app),
-                icon: const Icon(Icons.cancel_rounded, size: 18),
-                label: const Text('Reject', style: TextStyle(fontWeight: FontWeight.w600)),
-              ),
-            ],
-          ),
+          ],
+        ),
       ]),
     );
   }
@@ -1233,7 +1178,18 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
         Wrap(
           spacing: 8, runSpacing: 8, alignment: WrapAlignment.end,
           children: [
-            if (isPending) ...[
+            // Details button for ALL statuses
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1976D2), foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+              onPressed: () => _showRenewalDetailsDialog(app, context),
+              icon: const Icon(Icons.info_outline_rounded, size: 18),
+              label: const Text('Details', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            // Certify button only for pending
+            if (isPending)
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF388E3C), foregroundColor: Colors.white,
@@ -1243,16 +1199,6 @@ class _HrmoRenewalApprovalPageState extends State<HrmoRenewalApprovalPage>
                 icon: const Icon(Icons.verified_rounded, size: 18),
                 label: const Text('Certify', style: TextStyle(fontWeight: FontWeight.w600)),
               ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFD32F2F), foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-                onPressed: () => _showRejectDialog(app),
-                icon: const Icon(Icons.cancel_rounded, size: 18),
-                label: const Text('Reject', style: TextStyle(fontWeight: FontWeight.w600)),
-              ),
-            ],
           ],
         ),
       ]),
@@ -1891,5 +1837,505 @@ class _CertifyDialogState extends State<_CertifyDialog> {
         ]),
       ),
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DETAILS DIALOGS (Renewal & New Applications)
+// ═══════════════════════════════════════════════════════════════════
+
+void _showRenewalDetailsDialog(Map<String, dynamic> app, BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (context) => _RenewalDetailsDialog(application: app),
+  );
+}
+
+void _showNewAppDetailsDialog(Map<String, dynamic> app, BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (context) => _NewAppDetailsDialog(application: app),
+  );
+}
+
+class _RenewalDetailsDialog extends StatelessWidget {
+  final Map<String, dynamic> application;
+
+  const _RenewalDetailsDialog({required this.application});
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName = application['first_name'] ?? '';
+    final lastName = application['last_name'] ?? '';
+    final idNo = application['id_no'] ?? 'N/A';
+    final collegeOffice = application['college_office'] ?? 'N/A';
+    final controlNumber = application['control_number'] ?? 'N/A';
+    final phoneNumber = application['phone_number'] ?? 'N/A';
+    final email = application['email_address'] ?? 'N/A';
+    final renewalCount = application['renewal_count'] ?? 0;
+    
+    // PDF URLs based on schema
+    final renewalPdfUrl = application['renewal_pdf_url'] as String?;
+    final renewalHrmoOsdPdfUrl = application['renewal_hrmo_osd_pdf_url'] as String?;
+    
+    // Use the HRMO PDF if available, otherwise use renewal PDF
+    final pdfUrl = renewalHrmoOsdPdfUrl ?? renewalPdfUrl;
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 700,
+        constraints: const BoxConstraints(maxHeight: 800),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFFD32F2F), Color(0xFFE57373)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.info_outline_rounded,
+                      color: Colors.white, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Renewal Application Details',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      Text(
+                        '$firstName $lastName',
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Personal Information Section
+                    _sectionHeader('Personal Information'),
+                    const SizedBox(height: 12),
+                    _detailRow('Full Name', '$firstName $lastName'),
+                    _detailRow('ID Number', idNo),
+                    _detailRow('Office', collegeOffice),
+                    _detailRow('Control Number', controlNumber),
+                    _detailRow('Phone Number', phoneNumber),
+                    _detailRow('Email Address', email),
+                    _detailRow('Renewal Count', 'Renewal #$renewalCount'),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Application Status Section
+                    _sectionHeader('Application Status'),
+                    const SizedBox(height: 12),
+                    _detailRow('Status', application['status'] ?? 'N/A'),
+                    
+                    if (application['renewal_hrmo_osd_signatory_name'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Certified By', 
+                          application['renewal_hrmo_osd_signatory_name']),
+                    ],
+                    
+                    if (application['renewal_hrmo_osd_rejection_reason'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Rejection Reason', 
+                          application['renewal_hrmo_osd_rejection_reason']),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (pdfUrl != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _viewPdf(context, pdfUrl),
+                    icon: const Icon(Icons.picture_as_pdf_rounded),
+                    label: const Text('View Application Form'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFD32F2F),
+                      side: const BorderSide(color: Color(0xFFD32F2F)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () => _printPdf(context, pdfUrl),
+                    icon: const Icon(Icons.print_rounded),
+                    label: const Text('Print'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFD32F2F),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ] else
+                  Text(
+                    'No application form available',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF1A1A1A),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A1A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _viewPdf(BuildContext context, String pdfUrl) {
+    html.window.open(pdfUrl, '_blank');
+  }
+
+  void _printPdf(BuildContext context, String pdfUrl) async {
+    try {
+      final response = await http.get(Uri.parse(pdfUrl));
+
+      if (response.statusCode == 200) {
+        final pdfBytes = response.bodyBytes;
+
+        await Printing.layoutPdf(
+          onLayout: (format) async => pdfBytes,
+        );
+      } else {
+        throw Exception('Failed to load PDF');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading PDF: $e')),
+      );
+    }
+  }
+}
+
+class _NewAppDetailsDialog extends StatelessWidget {
+  final Map<String, dynamic> application;
+
+  const _NewAppDetailsDialog({required this.application});
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName = application['first_name'] ?? '';
+    final lastName = application['last_name'] ?? '';
+    final idNo = application['id_no'] ?? 'N/A';
+    final collegeOffice = application['college_office'] ?? 'N/A';
+    final controlNumber = application['control_number'] ?? 'N/A';
+    final phoneNumber = application['phone_number'] ?? 'N/A';
+    final email = application['email_address'] ?? 'N/A';
+    
+    // PDF URLs based on schema
+    final applicationPdfUrl = application['application_pdf_url'] as String?;
+    final hrmoOsdPdfUrl = application['hrmo_osd_pdf_url'] as String?;
+    
+    // Use the HRMO PDF if available, otherwise use application PDF
+    final pdfUrl = hrmoOsdPdfUrl ?? applicationPdfUrl;
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: 700,
+        constraints: const BoxConstraints(maxHeight: 800),
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF1565C0), Color(0xFF42A5F5)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.info_outline_rounded,
+                      color: Colors.white, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Application Details',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      Text(
+                        '$firstName $lastName',
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Personal Information Section
+                    _sectionHeader('Personal Information'),
+                    const SizedBox(height: 12),
+                    _detailRow('Full Name', '$firstName $lastName'),
+                    _detailRow('ID Number', idNo),
+                    _detailRow('Office', collegeOffice),
+                    _detailRow('Control Number', controlNumber),
+                    _detailRow('Phone Number', phoneNumber),
+                    _detailRow('Email Address', email),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Application Status Section
+                    _sectionHeader('Application Status'),
+                    const SizedBox(height: 12),
+                    _detailRow('Status', application['status'] ?? 'N/A'),
+                    
+                    if (application['hrmo_osd_name'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Certified By', application['hrmo_osd_name']),
+                    ],
+                    
+                    if (application['hrmo_osd_date_signed'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Date Signed', 
+                          DateFormat('MMM dd, yyyy').format(
+                            DateTime.parse(application['hrmo_osd_date_signed'].toString())
+                          )),
+                    ],
+                    
+                    if (application['rejection_reason'] != null) ...[
+                      const SizedBox(height: 8),
+                      _detailRow('Rejection Reason', application['rejection_reason']),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 16),
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (pdfUrl != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _viewPdf(context, pdfUrl),
+                    icon: const Icon(Icons.picture_as_pdf_rounded),
+                    label: const Text('View Application Form'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF1565C0),
+                      side: const BorderSide(color: Color(0xFF1565C0)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () => _printPdf(context, pdfUrl),
+                    icon: const Icon(Icons.print_rounded),
+                    label: const Text('Print'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1565C0),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ] else
+                  Text(
+                    'No application form available',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF1A1A1A),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A1A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _viewPdf(BuildContext context, String pdfUrl) {
+    html.window.open(pdfUrl, '_blank');
+  }
+
+  void _printPdf(BuildContext context, String pdfUrl) async {
+    try {
+      final response = await http.get(Uri.parse(pdfUrl));
+
+      if (response.statusCode == 200) {
+        final pdfBytes = response.bodyBytes;
+
+        await Printing.layoutPdf(
+          onLayout: (format) async => pdfBytes,
+        );
+      } else {
+        throw Exception('Failed to load PDF');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading PDF: $e')),
+      );
+    }
   }
 }
