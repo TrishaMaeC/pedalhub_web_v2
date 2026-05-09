@@ -2122,54 +2122,50 @@ class _FinalizeDecisionDialogState extends State<_FinalizeDecisionDialog> {
   }
 
   Future<void> _finalize() async {
-    if (!_canFinalize) return;
-    setState(() => _isSubmitting = true);
-    try {
-      final now = DateTime.now().toIso8601String();
-      final userId = supabase.auth.currentUser?.id;
+  if (!_canFinalize) return;
+  setState(() => _isSubmitting = true);
+  try {
+    final now = DateTime.now().toIso8601String();
+    final userId = supabase.auth.currentUser?.id;
 
-      await supabase.from('liabilities_version2').update({
+    await supabase.from('liabilities_version2').update({
+      'penalty_status': _finalPenalty,
+      'final_penalty_status': _finalPenalty,
+      'final_penalty_set_by': userId,
+      'final_penalty_set_at': now,
+      'final_penalty_remarks': _notesController.text.trim().isEmpty
+          ? null
+          : _notesController.text.trim(),
+    }).eq('id', widget.disciplineCase['id']);
+
+    final applicationId = widget.disciplineCase['application_id'];
+    if (applicationId != null) {
+      await supabase.from('borrowing_applications_version2').update({
         'penalty_status': _finalPenalty,
-        'final_penalty_status': _finalPenalty,
-        'final_penalty_set_by': userId,
-        'final_penalty_set_at': now,
-        'final_penalty_remarks': _notesController.text.trim().isEmpty
-            ? null
-            : _notesController.text.trim(),
-      }).eq('id', widget.disciplineCase['id']);
-
-      final applicationId = widget.disciplineCase['application_id'];
-      if (applicationId != null) {
-        await supabase.from('borrowing_applications_version2').update({
-          'penalty_status': _finalPenalty,
-        }).eq('id', applicationId);
-
-        await supabase.from('borrowing_sessions').update({
-          'status': _finalPenalty,
-        }).eq('application_id', applicationId);
-      }
-
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content:
-              Text('Decision finalized: ${_formatPenalty(_finalPenalty!)}'),
-          backgroundColor: const Color(0xFF388E3C),
-          duration: const Duration(seconds: 3),
-        ));
-        widget.onFinalized();
-      }
-    } catch (e) {
-      debugPrint('Finalize error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('Error: $e'), backgroundColor: Colors.red));
-      }
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
+      }).eq('id', applicationId);
     }
+
+    if (mounted) {
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content:
+            Text('Decision finalized: ${_formatPenalty(_finalPenalty!)}'),
+        backgroundColor: const Color(0xFF388E3C),
+        duration: const Duration(seconds: 3),
+      ));
+      widget.onFinalized();
+    }
+  } catch (e) {
+    debugPrint('Finalize error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Error: $e'), backgroundColor: Colors.red));
+    }
+  } finally {
+    if (mounted) setState(() => _isSubmitting = false);
   }
+}
 
   @override
   Widget build(BuildContext context) {
