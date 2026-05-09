@@ -133,20 +133,25 @@ class _ForReturnPageState extends State<ForReturnPage> {
 Future<void> _fetchRenewalBorrows() async {
   if (userCampus == null) return;
   try {
-    // Fetch sessions where status is active, specifically for renewals
-    // We can filter by the application's status or user_type inside the join
     final response = await supabase
-        .from('borrowing_sessions')
-        .select('''
-          *,
-          bike_info:bikes (*),
-          app:borrowing_applications_version2!inner (*)
-        ''')
-        .eq('status', 'active')
-        .eq('app.user_type', selectedRenewalUserType)
-        .ilike('app.campus', userCampus!)
-        .order('created_at', ascending: false);
-
+      .from('borrowing_sessions')
+      .select('''
+        *,
+        bike_info:bikes (*),
+        app:borrowing_applications_version2!inner (*)
+      ''')
+      .eq('status', 'active')
+      .eq('app.user_type', selectedRenewalUserType)
+      .ilike('app.campus', userCampus!)
+      .inFilter('app.status', [
+        'renewal_applied',
+        'renewal_medical_approved', 
+        'renewal_bike_damage_reported',
+        'active_renewal',
+        'renewal_pending_next_sem'
+      ])
+      .order('created_at', ascending: false);
+      
     final sessionsList = List<Map<String, dynamic>>.from(response);
 
     final List<Map<String, dynamic>> enriched = sessionsList.map((session) {
@@ -495,9 +500,15 @@ Future<void> _fetchRenewalBorrows() async {
         ),
         const SizedBox(height: 12),
         // ── Status chips ──
+        // ── Status chips ──
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
+            _renewalStatusChip('renewal_applied', 'Renewal Applied',
+                Icons.pending_actions_rounded, const Color(0xFFFF9800)),
+            const SizedBox(width: 12),
+            _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
+                Icons.search_rounded, const Color(0xFFF57C0)),
             _renewalStatusChip('renewal_medical_approved', 'Pending Inspection',
                 Icons.search_rounded, const Color(0xFFF57C00)),
             const SizedBox(width: 12),
@@ -536,6 +547,7 @@ Future<void> _fetchRenewalBorrows() async {
     }
     return const SizedBox.shrink();
   }
+  
 
   Widget _renewalStatusChip(
       String value, String label, IconData icon, Color color) {
@@ -697,12 +709,16 @@ Future<void> _fetchRenewalBorrows() async {
             .toList());
   }
 
-  String _getRenewalEmptyMessage() {
-    switch (selectedRenewalStatus) {
-      case 'renewal_medical_approved':
-        return selectedRenewalUserType == 'student'
-            ? 'No students pending bike inspection'
-            : 'No personnel pending bike inspection';
+ String _getRenewalEmptyMessage() {
+  switch (selectedRenewalStatus) {
+    case 'renewal_applied':
+      return selectedRenewalUserType == 'student'
+          ? 'No students with renewal applications'
+          : 'No personnel with renewal applications';
+    case 'renewal_medical_approved':
+      return selectedRenewalUserType == 'student'
+          ? 'No students pending bike inspection'
+          : 'No personnel pending bike inspection';
       case 'renewal_bike_damage_reported':
         return 'No damage reports to verify';
       case 'active_renewal':
@@ -716,7 +732,7 @@ Future<void> _fetchRenewalBorrows() async {
     }
   }
 
-  Widget _renewalInspectionCard(Map<String, dynamic> app) {
+Widget _renewalInspectionCard(Map<String, dynamic> app) {
     final firstName = app['first_name'] ?? '';
     final lastName = app['last_name'] ?? '';
     final userType = app['user_type'] ?? 'student';
@@ -730,6 +746,11 @@ Future<void> _fetchRenewalBorrows() async {
     IconData statusIcon;
 
     switch (status) {
+      case 'renewal_applied':
+        statusColor = const Color(0xFFFF9800);
+        statusLabel = 'Renewal Applied';
+        statusIcon = Icons.pending_actions_rounded;
+        break;
       case 'renewal_medical_approved':
         statusColor = const Color(0xFFF57C00);
         statusLabel = 'Pending Inspection';
@@ -769,9 +790,9 @@ Future<void> _fetchRenewalBorrows() async {
               offset: const Offset(0, 4))
         ],
         border: Border.all(
-          color: isDamageReported 
+          color: isDamageReported
               ? const Color(0xFFD32F2F).withOpacity(0.4)
-              : statusColor.withOpacity(0.2), 
+              : statusColor.withOpacity(0.2),
           width: isDamageReported ? 2 : 1,
         ),
       ),
@@ -805,8 +826,8 @@ Future<void> _fetchRenewalBorrows() async {
                       const SizedBox(width: 6),
                       _badge(
                         userType == 'student' ? 'Student' : 'Personnel',
-                        userType == 'student' 
-                            ? const Color(0xFF1565C0) 
+                        userType == 'student'
+                            ? const Color(0xFF1565C0)
                             : const Color(0xFF388E3C),
                       ),
                     ]),
@@ -827,7 +848,8 @@ Future<void> _fetchRenewalBorrows() async {
                       if (suspensionCount > 0) ...[
                         const SizedBox(width: 12),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: Colors.red[100],
                             borderRadius: BorderRadius.circular(4),
@@ -850,7 +872,7 @@ Future<void> _fetchRenewalBorrows() async {
               ),
             ],
           ),
-          
+
           // Show damage details if reported
           if (isDamageReported && app['renewal_gso_damage_remarks'] != null) ...[
             const SizedBox(height: 12),
@@ -859,13 +881,14 @@ Future<void> _fetchRenewalBorrows() async {
               decoration: BoxDecoration(
                 color: const Color(0xFFFFEBEE),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFD32F2F).withOpacity(0.3)),
+                border: Border.all(
+                    color: const Color(0xFFD32F2F).withOpacity(0.3)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    const Icon(Icons.warning_amber_rounded, 
+                    const Icon(Icons.warning_amber_rounded,
                         color: Color(0xFFD32F2F), size: 16),
                     const SizedBox(width: 6),
                     const Text('Self-Reported Damage',
@@ -883,52 +906,36 @@ Future<void> _fetchRenewalBorrows() async {
               ),
             ),
           ],
-          
+
           const SizedBox(height: 16),
-          
-          // Action buttons based on status
+
+          // Action buttons
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (status == 'renewal_medical_approved' || 
-                  status == 'renewal_bike_damage_reported')
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1565C0),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  onPressed: () => _showRenewalBikeInspectionDialog(app),
-                  icon: const Icon(Icons.bike_scooter_rounded, size: 18),
-                  label: Text(
-                    isDamageReported ? 'Verify Damage' : 'Inspect Bike',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1565C0),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
                 ),
-              if (status == 'active_renewal')
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00695C),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  onPressed: () => _showReturnDialog(app, 'renewal'),
-                  icon: const Icon(Icons.assignment_return_rounded, size: 18),
-                  label: const Text('Process Return',
-                      style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () => _showRenewalBikeInspectionDialog(app),
+                icon: const Icon(Icons.bike_scooter_rounded, size: 18),
+                label: Text(
+                  isDamageReported ? 'Verify Damage & Return' : 'Inspect & Return',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
+              ),
             ],
           ),
         ],
       ),
     );
   }
+
 
   // ── Short Term Borrows ──────────────────────────────────────
 

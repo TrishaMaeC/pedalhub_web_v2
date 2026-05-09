@@ -47,9 +47,9 @@ class _StudentPortalPageState extends State<StudentPortalPage> {
 
       // 1. Find latest liability by sr_code
       final liabilityRes = await supabase
-          .from('liabilities')
+          .from('liabilities_version2')
           .select('*')
-          .eq('sr_code', srCode)
+          .eq('id_no', srCode)
           .order('tagged_at', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -384,7 +384,7 @@ class _StudentPortalPageState extends State<StudentPortalPage> {
           children: [
             _detailRow(
                 'Borrower Name', _liability!['borrower_name'] ?? 'N/A'),
-            _detailRow('SR Code', _liability!['sr_code'] ?? 'N/A'),
+            _detailRow('SR Code', _liability!['id_no'] ?? 'N/A'),
             _detailRow('Campus',
                 (_liability!['campus'] ?? 'N/A').toString().toUpperCase()),
             _detailRow('Bike Number', _liability!['bike_number'] ?? 'N/A'),
@@ -637,14 +637,11 @@ class _StudentPortalPageState extends State<StudentPortalPage> {
                 '1', 'Go to the Student Discipline Office immediately.'),
             _stepItem('2', 'Bring a valid school ID and your SR Code.'),
             _stepItem('3', 'Explain your situation and settle the case.'),
-            _stepItem('4',
-                'Once resolved, contact the GSO to update your liability status.'),
           ] else ...[
             _stepItem(
-                '1', 'Go to the GSO office and return the bike immediately.'),
-            _stepItem('2', 'Coordinate with the GSO officer in charge.'),
-            _stepItem('3',
-                'Failure to return may result in escalation to Student Discipline.'),
+                '1', 'Go to the Student Discipline Office immediately.'),
+            _stepItem('2', 'Bring a valid school ID and your SR Code.'),
+            _stepItem('3', 'Explain your situation and settle the case.'),
           ],
         ],
       ),

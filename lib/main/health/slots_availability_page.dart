@@ -511,7 +511,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
       if (mounted) {
         _showSnack(
           e.toString().contains('duplicate')
-              ? 'A slot already exists for this date and time.'
+              ? 'A slot already exists for this date and time for this campus.'
               : 'Error: ${e.toString()}',
           isError: true,
         );
@@ -540,8 +540,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
     showDialog(
       context: context,
       builder: (context) => Dialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         elevation: 0,
         backgroundColor: Colors.transparent,
         child: Container(
@@ -564,8 +563,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
                 padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
                 decoration: const BoxDecoration(
                   color: Color(0xFF1565C0),
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(20)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                 ),
                 child: Row(
                   children: [
@@ -602,8 +600,15 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
                 child: FutureBuilder<List<dynamic>>(
                   future: supabase
                       .from('medical_appointments_version2')
-                      .select(
-                          '*, borrowing_applications_version2(first_name, last_name, email_address, phone_number)')
+                      .select('''
+                        *,
+                        borrowing_applications_version2(
+                          first_name,
+                          last_name,
+                          email_address,
+                          phone_number
+                        )
+                      ''')
                       .eq('slot_id', slot.id)
                       .order('created_at', ascending: false),
                   builder: (context, snapshot) {
@@ -650,11 +655,10 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
                       child: ListView.separated(
                         shrinkWrap: true,
                         itemCount: bookings.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 10),
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final booking = bookings[index];
-                          final app = booking['borrowing_applications'];
+                          final app = booking['borrowing_applications_version2'];
                           final status = booking['status'] ?? 'scheduled';
                           final statusColor = status == 'completed'
                               ? const Color(0xFF1A6B3A)
@@ -674,8 +678,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
                               children: [
                                 CircleAvatar(
                                   radius: 22,
-                                  backgroundColor:
-                                      statusColor.withOpacity(0.12),
+                                  backgroundColor: statusColor.withOpacity(0.12),
                                   child: Icon(
                                     status == 'completed'
                                         ? Icons.check_circle_rounded
@@ -689,8 +692,7 @@ class _HealthDashboardPageState extends State<HealthDashboardPage>
                                 const SizedBox(width: 14),
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         '${app?['first_name'] ?? 'Unknown'} ${app?['last_name'] ?? ''}',

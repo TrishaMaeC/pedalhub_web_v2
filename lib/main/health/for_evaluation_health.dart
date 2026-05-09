@@ -88,8 +88,11 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     _loadUserCampusAndInit();
 
     _autoRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
-      if (selectedTab == 'pending' && mounted) {
-        setState(() {});
+      if (mounted) {
+        _autoMarkNoShows();
+        if (selectedTab == 'pending') {
+          setState(() {});
+        }
       }
     });
   }
@@ -244,6 +247,7 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
         .from('clinic_settings')
         .select()
         .eq('date', todayString)
+        .eq('campus', userCampus!)
         .maybeSingle();
 
     if (response == null) {
@@ -345,7 +349,8 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                             await supabase.from('clinic_settings').insert({
                               "date": todayString,
                               "closing_time":
-                                  "${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}:00"
+                                  "${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}:00",
+                              "campus": userCampus!,
                             });
                             setState(() => clinicEndTime = selectedTime);
                             Navigator.pop(context);
@@ -970,6 +975,61 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     }
   }
 
+  Future<void> _autoMarkNoShows() async {
+    if (userCampus == null) return;
+
+    final now = DateTime.now();
+    final clinicEnd = DateTime(
+      now.year, now.month, now.day,
+      clinicEndTime.hour, clinicEndTime.minute,
+    );
+
+    if (now.isBefore(clinicEnd)) return;
+
+    final dateString =
+        '${now.year.toString().padLeft(4, '0')}-'
+        '${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+
+    try {
+      final todayAppts = await supabase
+          .from('medical_appointments_version2')
+          .select('application_id')
+          .eq('appointment_date', dateString);
+
+      if (todayAppts.isEmpty) return;
+
+      final todayAppIds = todayAppts
+          .map<int>((e) => e['application_id'] as int)
+          .toSet()
+          .toList();
+
+      await supabase
+          .from('borrowing_applications_version2')
+          .update({
+            'status': 'medical_no_show',
+            'no_show_marked_at': now.toIso8601String(),
+          })
+          .eq('status', 'medical_scheduled')
+          .inFilter('id', todayAppIds)
+          .ilike('campus', userCampus!);
+
+      await supabase
+          .from('borrowing_applications_version2')
+          .update({
+            'status': 'renewal_medical_no_show',
+            'no_show_marked_at': now.toIso8601String(),
+          })
+          .eq('status', 'renewal_medical_scheduled')
+          .inFilter('id', todayAppIds)
+          .ilike('campus', userCampus!);
+
+      debugPrint('[NoShow] Auto-mark done for $dateString');
+    } catch (e) {
+      debugPrint('[NoShow] Error: $e');
+    }
+  }
+
   // ─────────────────────────────────────────────
   // FETCH APPLICATIONS
   // ─────────────────────────────────────────────
@@ -1001,7 +1061,9 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
             .eq('status', 'medical_scheduled')
             .ilike('campus', userCampus!)
             .order('appointment_date', referencedTable: 'medical_appointments_version2', ascending: false);
-        for (var app in newApps) app['_isRenewal'] = false;
+        for (var app in newApps) {
+          app['_isRenewal'] = false;
+        }
       }
 
       if (pendingFilter == 'all' || pendingFilter == 'renewal') {
@@ -1011,7 +1073,9 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
             .eq('status', 'renewal_medical_scheduled')
             .ilike('campus', userCampus!)
             .order('appointment_date', referencedTable: 'medical_appointments_version2', ascending: false);
-        for (var app in renewalApps) app['_isRenewal'] = true;
+        for (var app in renewalApps) {
+          app['_isRenewal'] = true;
+        }
 
         walkInApps = await supabase
             .from('borrowing_applications_version2')
@@ -1086,18 +1150,50 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
     // HISTORY TAB
     // =============================
     else {
-      List<String> targetStatuses = (examFilter == 'pass') 
-          ? _historyPassStatuses 
-          : (examFilter == 'fail') ? _historyFailStatuses : [..._historyPassStatuses, ..._historyFailStatuses];
+      List<dynamic> examRecords = [];
 
-      response = await supabase
-          .from('borrowing_applications_version2')
-          .select('*')
-          .inFilter('status', targetStatuses)
-          .ilike('campus', userCampus!);
+      if (examFilter == 'missed') {
+        response = await supabase
+            .from('borrowing_applications_version2')
+            .select('*')
+            .inFilter('status', ['medical_no_show', 'renewal_medical_no_show'])
+            .ilike('campus', userCampus!);
 
-      for (var app in response) {
-        app['_isRenewal'] = _isRenewalStatus(app['status'] as String);
+        for (var app in response) {
+          app['_isRenewal'] = _isRenewalStatus(app['status'] as String);
+        }
+      } else {
+        if (examFilter == 'all') {
+          examRecords = await supabase
+              .from('physical_examinations')
+              .select('application_id')
+              .order('examination_date', ascending: false);
+        } else {
+          examRecords = await supabase
+              .from('physical_examinations')
+              .select('application_id')
+              .eq('is_passed', examFilter == 'pass')
+              .order('examination_date', ascending: false);
+        }
+
+        final List<int> appIdsWithExam = examRecords
+            .map<int>((e) => e['application_id'] as int)
+            .toSet()
+            .toList();
+
+        if (appIdsWithExam.isEmpty) {
+          response = [];
+        } else {
+          response = await supabase
+              .from('borrowing_applications_version2')
+              .select('*')
+              .inFilter('id', appIdsWithExam)
+              .ilike('campus', userCampus!);
+        }
+
+        for (var app in response) {
+          app['_isRenewal'] = _isRenewalStatus(app['status'] as String);
+        }
       }
     }
 
@@ -1176,12 +1272,14 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
 
       List<String> abnormalFindings = [];
       if (examData['balance'] == false) abnormalFindings.add('Balance');
-      if (examData['musculoskeletal'] == false)
+      if (examData['musculoskeletal'] == false) {
         abnormalFindings.add('Musculo-Skeletal');
+      }
       if (examData['lungs'] == false) abnormalFindings.add('Lungs');
       if (examData['heart'] == false) abnormalFindings.add('Heart');
-      if (examData['extremities'] == false)
+      if (examData['extremities'] == false) {
         abnormalFindings.add('Extremities');
+      }
       if (examData['hearing'] == false) abnormalFindings.add('Hearing');
       if (examData['vision'] == false) abnormalFindings.add('Vision');
 
@@ -1967,6 +2065,60 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                   _smallFilterButton('new', 'New'),
                   _smallFilterButton('renewal', 'Renewal'),
                   GestureDetector(
+                    onTap: () async {
+                      await pickClinicEndTime();
+                      // Update the closing time in the database
+                      final today = DateTime.now();
+                      final todayString =
+                          "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
+                      
+                      try {
+                        // Check if record exists
+                        final existing = await supabase
+                            .from('clinic_settings')
+                            .select()
+                            .eq('date', todayString)
+                            .eq('campus', userCampus!) 
+                            .maybeSingle();
+                        
+                        if (existing != null) {
+                          // Update existing record
+                          await supabase.from('clinic_settings').update({
+                            "closing_time":
+                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00"
+                          }).eq('date', todayString).eq('campus', userCampus!);
+                        } else {
+                          // Insert new record
+                          await supabase.from('clinic_settings').insert({
+                            "date": todayString,
+                            "closing_time":
+                                "${clinicEndTime.hour.toString().padLeft(2, '0')}:${clinicEndTime.minute.toString().padLeft(2, '0')}:00",
+                            "campus": userCampus!,
+                          });
+                        }
+                        
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Clinic closing time updated successfully'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                        
+                        // Refresh to apply new time
+                        fetchApplications();
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error updating closing time: $e'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 6),
@@ -1986,6 +2138,8 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                             style: const TextStyle(
                                 fontWeight: FontWeight.bold),
                           ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.edit, size: 14, color: Colors.blue),
                         ],
                       ),
                     ),
@@ -2008,6 +2162,8 @@ class _HealthEvaluationPageState extends State<HealthEvaluationPage> {
                       Colors.green, false),
                   filterButton(
                       'fail', 'Failed', Icons.cancel, Colors.red, false),
+                  filterButton(
+                    'missed', 'Missed', Icons.event_busy, Colors.grey, false),
                 ],
               ),
             ),

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../login_page.dart';
-import 'dart:async';
 
 class SuperAdminDashboard extends StatefulWidget {
   const SuperAdminDashboard({super.key});
@@ -37,8 +36,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   Map<String, dynamic>? _settings;
   bool _settingsLoading = true;
 
-  Timer? _timer;
-  Duration _remainingTime = Duration.zero;
 
   final List<String> _roles = [
     'GSO', 'SDO', 'HEALTH', 'VICE', 'PSO', 'HRMO', 'DISCIPLINE'
@@ -73,12 +70,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     _fetchSettings();
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
   // ─── Semester ────────────────────────────────────────────────
 
   Future<void> _fetchSemester() async {
@@ -107,8 +98,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
       _settings = data;
       _settingsLoading = false;
     });
-
-    _startTimer();
   }
 
   Future<void> _updateSettings(Map<String, dynamic> payload) async {
@@ -118,38 +107,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         .eq('id', _settings!['id']);
 
     await _fetchSettings();
-  }
-
-  void _startTimer() {
-    _timer?.cancel();
-
-    if (_settings == null) return;
-    if (_settings!['is_test_mode'] != true) return;
-
-    final int minutes = _settings!['test_cycle_minutes'];
-    final endTime = DateTime.now().add(Duration(minutes: minutes));
-
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      final remaining = endTime.difference(DateTime.now());
-
-      if (remaining.isNegative) {
-        timer.cancel();
-        setState(() {
-          _remainingTime = Duration.zero;
-        });
-      } else {
-        setState(() {
-          _remainingTime = remaining;
-        });
-      }
-    });
-  }
-
-  String _formatDuration(Duration d) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(d.inMinutes.remainder(60));
-    final seconds = twoDigits(d.inSeconds.remainder(60));
-    return "$minutes:$seconds";
   }
 
   Future<void> _saveSemester({
@@ -436,6 +393,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     final passwordController = TextEditingController();
     String selectedRole = _roles.first;
     String selectedCampus = _campuses.first;
+    bool obscurePassword = true;
 
     showDialog(
       context: context,
@@ -458,16 +416,20 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: passwordController,
-                  decoration: const InputDecoration(
+                  obscureText: obscurePassword,  // ← was: obscureText: true
+                  decoration: InputDecoration(
                     labelText: 'Password',
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscurePassword ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setDialogState(() => obscurePassword = !obscurePassword),
+                    ),
                   ),
-                  obscureText: true,
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedRole,
+                  initialValue: selectedRole,
                   decoration: const InputDecoration(
                     labelText: 'Role',
                     border: OutlineInputBorder(),
@@ -482,7 +444,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedCampus,
+                  initialValue: selectedCampus,
                   decoration: const InputDecoration(
                     labelText: 'Campus',
                     prefixIcon: Icon(Icons.location_city_outlined),
@@ -507,7 +469,9 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
             ElevatedButton(
               onPressed: () async {
                 if (emailController.text.trim().isEmpty ||
-                    passwordController.text.trim().isEmpty) return;
+                    passwordController.text.trim().isEmpty) {
+                  return;
+                }
                 Navigator.pop(context);
                 await _createAccount(
                   emailController.text.trim(),
@@ -533,6 +497,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     final passwordController = TextEditingController();
     String selectedRole = account['role'];
     String selectedCampus = account['campus'] ?? _campuses.first;
+    bool obscurePassword = true;
 
     showDialog(
       context: context,
@@ -555,16 +520,20 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: passwordController,
-                  decoration: const InputDecoration(
+                  obscureText: obscurePassword,  // ← was: obscureText: true
+                  decoration: InputDecoration(
                     labelText: 'New Password (leave blank to keep)',
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscurePassword ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setDialogState(() => obscurePassword = !obscurePassword),
+                    ),
                   ),
-                  obscureText: true,
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedRole,
+                  initialValue: selectedRole,
                   decoration: const InputDecoration(
                     labelText: 'Role',
                     border: OutlineInputBorder(),
@@ -579,7 +548,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedCampus,
+                  initialValue: selectedCampus,
                   decoration: const InputDecoration(
                     labelText: 'Campus',
                     prefixIcon: Icon(Icons.location_city_outlined),
@@ -819,7 +788,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                         ),
                         const SizedBox(height: 10),
                         DropdownButtonFormField<int>(
-                          value: _settings?['test_cycle_minutes'] ?? 10,
+                          initialValue: _settings?['test_cycle_minutes'] ?? 10,
                           decoration: const InputDecoration(
                             labelText: 'Test Cycle Duration',
                             border: OutlineInputBorder(),
@@ -834,35 +803,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                             _updateSettings({'test_cycle_minutes': value});
                           },
                         ),
-                        const SizedBox(height: 16),
-                        if (_settings?['is_test_mode'] == true)
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red[50],
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.red),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.timer, color: Colors.red),
-                                const SizedBox(width: 10),
-                                const Text(
-                                  'Cycle Ends In:',
-                                  style: TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  _formatDuration(_remainingTime),
-                                  style: const TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.red,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                       ],
                     ),
             ),
@@ -892,7 +832,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                           title: const Text('Enable Short Term'),
                           subtitle: const Text('Allow short-term bike borrowing'),
                           value: _settings?['is_short_term'] ?? false,
-                          activeColor: const Color(0xFFD32F2F),
+                          activeThumbColor: const Color(0xFFD32F2F),
                           onChanged: (value) {
                             _updateSettings({'is_short_term': value});
                           },
